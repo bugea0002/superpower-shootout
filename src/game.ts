@@ -3071,12 +3071,13 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#f8fafc';
     ctx.fillText('• 초능력 : 하단 슬롯 터치 또는 숫자키 1~4 / Q,W,E,R', bx + 16, by + 168);
     ctx.fillText('• 일시정지 : 게임 중 ESC (계속 / 다시하기 / 메인메뉴)', bx + 16, by + 182);
+    ctx.fillText('• 화면설정 : 우측상단 [전체화면] 주소창숨김 / [비율: 꽉채움]', bx + 16, by + 196);
 
     // Close button prompt
     ctx.textAlign = 'center';
     ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#38bdf8';
-    ctx.fillText('[ 화면 터치 / ESC 키로 닫기 ]', VIRTUAL_WIDTH / 2, by + bh - 10);
+    ctx.fillText('[ 화면 터치 / ESC 키로 닫기 ]', VIRTUAL_WIDTH / 2, by + bh - 8);
   }
 
   private renderMatchOverOverlay(ctx: CanvasRenderingContext2D): void {
