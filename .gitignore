@@ -1,0 +1,5 @@
+node_modules
+dist
+.system_generated
+.env
+.DS_Store

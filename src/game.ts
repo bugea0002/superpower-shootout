@@ -1,0 +1,2040 @@
+import { RetroAudioEngine } from './audio';
+import { MultiplayerClient } from './network';
+import {
+  coordsToZone,
+  getKeeperSkill,
+  getKickerSkill,
+  getOppositeCornerZone,
+  KEEPER_SKILLS,
+  KICKER_SKILLS,
+  zoneToGoalCoords,
+} from './skills';
+import { KeeperAnimKey, KickerAnimKey, PixelSpriteBank } from './sprites';
+import {
+  AIDifficulty,
+  BallState,
+  DiveZone,
+  GameMode,
+  GoalRect,
+  KeeperActor,
+  KeeperSkillId,
+  KickerActor,
+  KickerSkillId,
+  ScreenState,
+  ShotResult,
+  TurnPhase,
+  TurnRole,
+  VIRTUAL_HEIGHT,
+  VIRTUAL_WIDTH,
+} from './types';
+import { PixelVFXManager } from './vfx';
+
+interface SkillSlotRect {
+  index: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export class SuperpowerShootoutGame {
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private sprites: PixelSpriteBank;
+  private vfx: PixelVFXManager;
+  private audio: RetroAudioEngine;
+  private net: MultiplayerClient;
+
+  private screen: ScreenState = 'title';
+  private gameMode: GameMode = 'vs_ai';
+  private difficulty: AIDifficulty = 'pro';
+  private menuIndex = 0;
+  private onlineRoomInput = '1004';
+
+  // Goal geometry in 480x270 virtual space
+  private readonly goal: GoalRect = {
+    left: 132,
+    right: 348,
+    top: 56,
+    bottom: 136,
+    width: 216,
+    height: 80,
+  };
+
+  private readonly penaltySpot = { x: 240, y: 218 };
+
+  // Match scoreboard & state
+  private round = 1; // 1..5, then 6+ sudden death
+  private isSuddenDeath = false;
+  private turnRole: TurnRole = 'player_kick'; // 'player_kick' = Team Blue kicking, 'player_keep' = Team Red kicking
+  private phase: TurnPhase = 'intro';
+  private phaseTimer = 0;
+
+  private blueHistory: ShotResult[] = [];
+  private redHistory: ShotResult[] = [];
+  private blueScore = 0;
+  private redScore = 0;
+  private blueMana = 65;
+  private redMana = 65;
+  private readonly maxMana = 100;
+  private winnerText = '';
+
+  // Active turn skill choices
+  private selectedKickerSkill: KickerSkillId = 'none';
+  private selectedKeeperSkill: KeeperSkillId = 'none';
+
+  // Aim & Power meter
+  private aimX = 240;
+  private aimY = 96;
+  private keeperAimZone: DiveZone = 'center';
+  private powerGauge = 0;
+  private powerDir = 1;
+  private reflexBonus = false;
+
+  // AI planned decisions for current turn
+  private aiPlannedDiveZone: DiveZone = 'center';
+  private aiPlannedKeeperSkill: KeeperSkillId = 'none';
+  private aiDiveTriggerZ = 0.34;
+  private aiAimTimer = 0;
+  private aiTargetAimX = 240;
+  private aiTargetAimY = 90;
+
+  // Actors & Ball
+  private kicker!: KickerActor;
+  private keeper!: KeeperActor;
+  private ball!: BallState;
+
+  // Net bulge animation
+  private netBulgeX = 240;
+  private netBulgeY = 96;
+  private netBulgeStrength = 0;
+
+  // Input state
+  private keys: Set<string> = new Set();
+  private mousePos = { x: 240, y: 96, active: false };
+  private skillSlotRects: SkillSlotRect[] = [];
+  private elapsedTime = 0;
+  private hitStopTimer = 0;
+  private slowMoFactor = 1;
+  private slowMoTimer = 0;
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d')!;
+    this.ctx.imageSmoothingEnabled = false;
+
+    this.sprites = new PixelSpriteBank();
+    this.vfx = new PixelVFXManager();
+    this.audio = new RetroAudioEngine();
+    this.net = new MultiplayerClient();
+
+    this.setupNetworkCallbacks();
+    this.resetTurnActors();
+    this.bindEvents();
+  }
+
+  private setupNetworkCallbacks(): void {
+    this.net.onMatchReady = () => {
+      this.audio.playUiSelect();
+      this.startNewMatch();
+    };
+
+    this.net.onGameEvent = (event, fromRole) => {
+      if (this.gameMode !== 'online_multi') return;
+
+      if (event.type === 'kick_action') {
+        // Opponent kicked!
+        this.aimX = event.aimX;
+        this.aimY = event.aimY;
+        this.powerGauge = event.power;
+        this.selectedKickerSkill = event.skill as KickerSkillId;
+        this.kicker.skillAura = this.selectedKickerSkill;
+        this.beginKickerRunup();
+      } else if (event.type === 'keeper_dive') {
+        // Opponent keeper dived!
+        const zone = event.zone as DiveZone;
+        const skill = event.skill as KeeperSkillId;
+        this.reflexBonus = event.reflexBonus;
+        this.executeKeeperDive(zone, skill);
+      }
+    };
+
+    this.net.onOpponentLeft = () => {
+      if (this.screen === 'playing') {
+        this.vfx.showBanner('OPPONENT LEFT!', '상대방이 접속을 종료했습니다.', '#ef4444', '#0f172a', 2.0);
+      }
+    };
+  }
+
+  public start(): void {
+    let last = performance.now();
+    const loop = (now: number) => {
+      const rawDt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      this.update(rawDt);
+      this.render();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  // =========================================================================
+  // INPUT HANDLING
+  // =========================================================================
+  private bindEvents(): void {
+    window.addEventListener('keydown', (e) => {
+      const code = e.code;
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(code)) {
+        e.preventDefault();
+      }
+
+      if (e.repeat) return;
+      this.keys.add(code);
+
+      if (code === 'KeyM') {
+        this.audio.toggleMute();
+        return;
+      }
+      if (code === 'KeyC') {
+        document.getElementById('crt-overlay')?.classList.toggle('off');
+        return;
+      }
+
+      this.handleKeyPress(code);
+    });
+
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      if (e.code === 'Space') {
+        this.handleActionRelease();
+      }
+    });
+
+    this.canvas.addEventListener('mousemove', (e) => {
+      const pt = this.clientToVirtual(e.clientX, e.clientY);
+      this.mousePos.x = pt.x;
+      this.mousePos.y = pt.y;
+      this.mousePos.active = true;
+
+      if (this.screen === 'playing') {
+        const humanKicking = this.isHumanControllingKicker();
+        const humanKeeping = this.isHumanControllingKeeper();
+        if (humanKicking && this.phase === 'aiming' && this.gameMode === 'vs_ai') {
+          this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
+          this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
+        } else if (humanKeeping && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
+          if (pt.y < 180) {
+            this.keeperAimZone = coordsToZone(pt.x, pt.y, this.goal);
+          }
+        }
+      }
+    });
+
+    this.canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const pt = this.clientToVirtual(e.clientX, e.clientY);
+      this.handlePointerDown(pt.x, pt.y);
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
+      this.handleActionRelease();
+    });
+
+    this.canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      const pt = this.clientToVirtual(t.clientX, t.clientY);
+      this.mousePos.x = pt.x;
+      this.mousePos.y = pt.y;
+      this.handlePointerDown(pt.x, pt.y);
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      this.handleActionRelease();
+    }, { passive: false });
+  }
+
+  private clientToVirtual(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: ((clientX - rect.left) / rect.width) * VIRTUAL_WIDTH,
+      y: ((clientY - rect.top) / rect.height) * VIRTUAL_HEIGHT,
+    };
+  }
+
+  private handleKeyPress(code: string): void {
+    if (this.screen === 'title') {
+      if (code === 'Space' || code === 'Enter') {
+        this.audio.playUiSelect();
+        this.screen = 'mode_select';
+        this.menuIndex = 0;
+      }
+      return;
+    }
+
+    if (this.screen === 'mode_select') {
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        this.menuIndex = (this.menuIndex + 4) % 5;
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowDown' || code === 'KeyS') {
+        this.menuIndex = (this.menuIndex + 1) % 5;
+        this.audio.playUiSelect();
+      } else if (code === 'Space' || code === 'Enter') {
+        this.selectMenuOption(this.menuIndex);
+      } else if (code === 'Escape') {
+        this.screen = 'title';
+      }
+      return;
+    }
+
+    if (this.screen === 'online_lobby') {
+      if (code === 'Backspace') {
+        this.onlineRoomInput = this.onlineRoomInput.slice(0, -1);
+        this.audio.playUiSelect();
+      } else if (code.startsWith('Digit') || code.startsWith('Key')) {
+        const char = code.replace('Digit', '').replace('Key', '').toUpperCase();
+        if (this.onlineRoomInput.length < 6 && char.length === 1) {
+          this.onlineRoomInput += char;
+          this.audio.playUiSelect();
+        }
+      } else if (code === 'Enter' || code === 'Space') {
+        this.audio.playUiSelect();
+        this.net.connect(this.onlineRoomInput);
+      } else if (code === 'Escape') {
+        this.net.disconnect();
+        this.screen = 'mode_select';
+      }
+      return;
+    }
+
+    if (this.screen === 'match_over') {
+      if (code === 'Space' || code === 'Enter') {
+        this.audio.playUiSelect();
+        this.startNewMatch();
+      } else if (code === 'Escape') {
+        this.audio.stopBgm();
+        this.screen = 'mode_select';
+      }
+      return;
+    }
+
+    // In-game controls
+    if (this.screen === 'playing') {
+      // Skill keys 1..4 (or Q,W,E,R)
+      const skillSlotMap: Record<string, number> = {
+        Digit1: 0, KeyQ: 0,
+        Digit2: 1, KeyW: 1,
+        Digit3: 2, KeyE: 2,
+        Digit4: 3, KeyR: 3,
+      };
+      if (code in skillSlotMap) {
+        this.tryToggleSkillSlot(skillSlotMap[code]);
+        return;
+      }
+
+      if (code === 'Space') {
+        this.handleActionPress();
+      }
+    }
+  }
+
+  private handlePointerDown(vx: number, vy: number): void {
+    if (this.screen === 'title') {
+      this.audio.playUiSelect();
+      this.screen = 'mode_select';
+      return;
+    }
+
+    if (this.screen === 'mode_select') {
+      for (let i = 0; i < 5; i++) {
+        const btnY = 82 + i * 28;
+        if (vx >= 110 && vx <= 370 && vy >= btnY && vy <= btnY + 24) {
+          this.selectMenuOption(i);
+          return;
+        }
+      }
+      return;
+    }
+
+    if (this.screen === 'online_lobby') {
+      // Connect button click
+      if (vx >= 140 && vx <= 340 && vy >= 170 && vy <= 198) {
+        this.audio.playUiSelect();
+        this.net.connect(this.onlineRoomInput);
+        return;
+      }
+      // Back button click
+      if (vx >= 180 && vx <= 300 && vy >= 210 && vy <= 232) {
+        this.audio.playUiSelect();
+        this.net.disconnect();
+        this.screen = 'mode_select';
+        return;
+      }
+      return;
+    }
+
+    if (this.screen === 'match_over') {
+      this.audio.playUiSelect();
+      this.startNewMatch();
+      return;
+    }
+
+    if (this.screen === 'playing') {
+      // Check skill slot clicks at bottom bar
+      for (const slot of this.skillSlotRects) {
+        if (vx >= slot.x && vx <= slot.x + slot.w && vy >= slot.y && vy <= slot.y + slot.h) {
+          this.tryToggleSkillSlot(slot.index);
+          return;
+        }
+      }
+
+      if (this.isHumanControllingKicker() && this.phase === 'aiming') {
+        if (vy < 185) {
+          this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, vx));
+          this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, vy));
+        }
+        this.handleActionPress();
+      } else if (this.isHumanControllingKeeper()) {
+        if (vy < 185) {
+          this.keeperAimZone = coordsToZone(vx, vy, this.goal);
+        }
+        this.handleActionPress();
+      }
+    }
+  }
+
+  private selectMenuOption(idx: number): void {
+    this.audio.playUiSelect();
+    if (idx === 0) {
+      this.gameMode = 'vs_ai';
+      this.difficulty = 'rookie';
+      this.startNewMatch();
+    } else if (idx === 1) {
+      this.gameMode = 'vs_ai';
+      this.difficulty = 'pro';
+      this.startNewMatch();
+    } else if (idx === 2) {
+      this.gameMode = 'vs_ai';
+      this.difficulty = 'legend';
+      this.startNewMatch();
+    } else if (idx === 3) {
+      this.gameMode = 'local_2p';
+      this.difficulty = 'pro';
+      this.startNewMatch();
+    } else {
+      this.gameMode = 'online_multi';
+      this.screen = 'online_lobby';
+    }
+  }
+
+  private isHumanControllingKicker(): boolean {
+    if (this.gameMode === 'local_2p') return true;
+    if (this.gameMode === 'online_multi') {
+      const isP1Turn = this.turnRole === 'player_kick';
+      return (isP1Turn && this.net.myRole === 'p1') || (!isP1Turn && this.net.myRole === 'p2');
+    }
+    return this.turnRole === 'player_kick';
+  }
+
+  private isHumanControllingKeeper(): boolean {
+    if (this.gameMode === 'local_2p') return true;
+    if (this.gameMode === 'online_multi') {
+      const isP1Keeper = this.turnRole === 'player_keep';
+      return (isP1Keeper && this.net.myRole === 'p1') || (!isP1Keeper && this.net.myRole === 'p2');
+    }
+    return this.turnRole === 'player_keep';
+  }
+
+  private tryToggleSkillSlot(slotIndex: number): void {
+    // Allow human kicker during aiming, or human keeper before diving
+    if (this.gameMode === 'vs_ai') {
+      if (this.turnRole === 'player_kick' && this.phase === 'aiming') {
+        const skill = KICKER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKickerSkill === skill.id) {
+          this.selectedKickerSkill = 'none';
+          this.kicker.skillAura = 'none';
+          this.audio.playUiSelect();
+        } else if (this.blueMana >= skill.manaCost) {
+          this.selectedKickerSkill = skill.id;
+          this.kicker.skillAura = skill.id;
+          this.audio.playSkillToggle();
+          this.vfx.spawnShockwave(this.kicker.x, this.kicker.y + 8, 28, skill.color, 0.25);
+        }
+      } else if (
+        this.turnRole === 'player_keep' &&
+        (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived))
+      ) {
+        const skill = KEEPER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKeeperSkill === skill.id) {
+          this.selectedKeeperSkill = 'none';
+          this.audio.playUiSelect();
+        } else if (this.blueMana >= skill.manaCost) {
+          this.selectedKeeperSkill = skill.id;
+          this.audio.playSkillToggle();
+          this.vfx.spawnShockwave(this.keeper.x, this.keeper.y, 24, skill.color, 0.25);
+        }
+      }
+    } else {
+      // Local 2P: during aiming, kicker uses 1-4; during runup/flight, keeper uses 1-4!
+      const kickerMana = this.turnRole === 'player_kick' ? this.blueMana : this.redMana;
+      const keeperMana = this.turnRole === 'player_kick' ? this.redMana : this.blueMana;
+
+      if (this.phase === 'aiming') {
+        const skill = KICKER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKickerSkill === skill.id) {
+          this.selectedKickerSkill = 'none';
+          this.kicker.skillAura = 'none';
+          this.audio.playUiSelect();
+        } else if (kickerMana >= skill.manaCost) {
+          this.selectedKickerSkill = skill.id;
+          this.kicker.skillAura = skill.id;
+          this.audio.playSkillToggle();
+        }
+      } else if (this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived)) {
+        const skill = KEEPER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKeeperSkill === skill.id) {
+          this.selectedKeeperSkill = 'none';
+          this.audio.playUiSelect();
+        } else if (keeperMana >= skill.manaCost) {
+          this.selectedKeeperSkill = skill.id;
+          this.audio.playSkillToggle();
+        }
+      }
+    }
+  }
+
+  private handleActionPress(): void {
+    if (this.isHumanControllingKicker() && this.phase === 'aiming') {
+      this.phase = 'charging';
+      this.powerGauge = 0.05;
+      this.powerDir = 1;
+      this.kicker.anim = 'charge';
+      this.kicker.frame = 0;
+      return;
+    }
+
+    // Human keeper reflex dive trigger!
+    if (
+      this.isHumanControllingKeeper() &&
+      (this.phase === 'ball_flight' || this.phase === 'chrono_pause') &&
+      !this.keeper.hasDived
+    ) {
+      // Check if player timed SPACE right around sweet reflex window
+      if (this.ball.z >= 0.25 && this.ball.z <= 0.78 && this.phase === 'ball_flight') {
+        this.reflexBonus = true;
+      }
+      this.executeKeeperDive(this.keeperAimZone, this.selectedKeeperSkill);
+    }
+  }
+
+  private handleActionRelease(): void {
+    if (this.isHumanControllingKicker() && this.phase === 'charging') {
+      this.beginKickerRunup();
+    }
+  }
+
+  // =========================================================================
+  // MATCH & TURN LIFECYCLE
+  // =========================================================================
+  private startNewMatch(): void {
+    this.screen = 'playing';
+    this.round = 1;
+    this.isSuddenDeath = false;
+    this.turnRole = 'player_kick';
+    this.blueHistory = [];
+    this.redHistory = [];
+    this.blueScore = 0;
+    this.redScore = 0;
+    this.blueMana = 70;
+    this.redMana = 70;
+    this.winnerText = '';
+
+    this.audio.startBgm(false);
+    this.setupTurn();
+  }
+
+  private resetTurnActors(): void {
+    this.kicker = {
+      x: 220,
+      y: 230,
+      anim: 'idle',
+      frame: 0,
+      animTimer: 0,
+      skillAura: 'none',
+    };
+
+    this.keeper = {
+      x: 240,
+      y: 112,
+      baseX: 240,
+      baseY: 112,
+      targetX: 240,
+      targetY: 112,
+      anim: 'idle',
+      frame: 0,
+      animTimer: 0,
+      hasDived: false,
+      diveZone: 'center',
+      scale: 1,
+      skillActive: 'none',
+      iceWallZone: null,
+      blackHoleActive: false,
+      blinked: false,
+    };
+
+    this.ball = {
+      z: 0,
+      startX: this.penaltySpot.x,
+      startY: this.penaltySpot.y,
+      targetX: 240,
+      targetY: 96,
+      x: this.penaltySpot.x,
+      y: this.penaltySpot.y,
+      groundY: this.penaltySpot.y,
+      radius: 9,
+      speed: 1.55,
+      power: 0.85,
+      perfectImpact: false,
+      spin: 0,
+      curveOffset: 0,
+      curveTriggered: false,
+      chronoTriggered: false,
+      chronoTimer: 0,
+      deflected: false,
+      vx: 0,
+      vy: 0,
+      mirageClones: [],
+    };
+  }
+
+  private setupTurn(): void {
+    this.vfx.resetRound();
+    this.resetTurnActors();
+    this.selectedKickerSkill = 'none';
+    this.selectedKeeperSkill = 'none';
+    this.aimX = 240 + (Math.random() - 0.5) * 40;
+    this.aimY = 96;
+    this.keeperAimZone = 'center';
+    this.powerGauge = 0;
+    this.reflexBonus = false;
+    this.netBulgeStrength = 0;
+    this.slowMoFactor = 1;
+    this.slowMoTimer = 0;
+
+    this.phase = 'intro';
+    this.phaseTimer = 0.85;
+
+    const roundTitle = this.isSuddenDeath ? `SUDDEN DEATH R${this.round}` : `ROUND ${this.round}`;
+    const roleSub =
+      this.gameMode === 'local_2p'
+        ? this.turnRole === 'player_kick'
+          ? 'P1 KICKER vs P2 KEEPER'
+          : 'P2 KICKER vs P1 KEEPER'
+        : this.turnRole === 'player_kick'
+        ? 'YOUR KICK! 골문을 노려라!'
+        : 'YOUR SAVE! 슈팅을 막아내라!';
+
+    this.vfx.showBanner(
+      roundTitle,
+      roleSub,
+      this.turnRole === 'player_kick' ? '#38bdf8' : '#fb923c',
+      '#0f172a',
+      0.95
+    );
+    this.audio.playWhistle(false);
+
+    this.planAIDecisionsForTurn();
+  }
+
+  private planAIDecisionsForTurn(): void {
+    const zones: DiveZone[] = ['top_left', 'top_center', 'top_right', 'low_left', 'center', 'low_right'];
+    this.aiPlannedDiveZone = zones[Math.floor(Math.random() * zones.length)];
+    this.aiPlannedKeeperSkill = 'none';
+    this.aiDiveTriggerZ = this.difficulty === 'legend' ? 0.46 : this.difficulty === 'pro' ? 0.36 : 0.25;
+
+    if (this.gameMode === 'vs_ai' && this.turnRole === 'player_keep') {
+      // AI is Kicker (Red Team)
+      this.aiAimTimer = 0.85 + Math.random() * 0.55;
+      const cornerChoices = [
+        { x: this.goal.left + 22, y: this.goal.top + 18 },
+        { x: this.goal.right - 22, y: this.goal.top + 18 },
+        { x: this.goal.left + 24, y: this.goal.bottom - 14 },
+        { x: this.goal.right - 24, y: this.goal.bottom - 14 },
+        { x: 240, y: this.goal.top + 20 },
+      ];
+      const pick = cornerChoices[Math.floor(Math.random() * cornerChoices.length)];
+      const spread = this.difficulty === 'rookie' ? 24 : this.difficulty === 'pro' ? 12 : 6;
+      this.aiTargetAimX = pick.x + (Math.random() - 0.5) * spread;
+      this.aiTargetAimY = pick.y + (Math.random() - 0.5) * spread;
+
+      // AI Kicker Superpower selection
+      const skillProb = this.difficulty === 'legend' ? 0.78 : this.difficulty === 'pro' ? 0.58 : 0.35;
+      if (Math.random() < skillProb) {
+        const affordable = KICKER_SKILLS.filter((s) => s.manaCost <= this.redMana);
+        if (affordable.length > 0) {
+          const chosen = affordable[Math.floor(Math.random() * affordable.length)];
+          this.selectedKickerSkill = chosen.id;
+          this.kicker.skillAura = chosen.id;
+        }
+      }
+    }
+  }
+
+  private beginKickerRunup(): void {
+    if (this.gameMode === 'online_multi' && this.isHumanControllingKicker()) {
+      this.net.sendEvent({
+        type: 'kick_action',
+        aimX: this.aimX,
+        aimY: this.aimY,
+        power: this.powerGauge,
+        skill: this.selectedKickerSkill,
+      });
+    }
+
+    this.phase = 'runup';
+    this.phaseTimer = 0.38;
+    this.kicker.anim = 'runup';
+    this.kicker.frame = 0;
+
+    // Consume Kicker Mana if skill active
+    const skillDef = getKickerSkill(this.selectedKickerSkill);
+    if (skillDef) {
+      if (this.turnRole === 'player_kick') {
+        this.blueMana = Math.max(0, this.blueMana - skillDef.manaCost);
+      } else {
+        this.redMana = Math.max(0, this.redMana - skillDef.manaCost);
+      }
+      this.vfx.triggerSpeedLines(skillDef.color, 0.55);
+      this.vfx.showBanner(skillDef.nameEn + '!', skillDef.nameKo, skillDef.accentColor, '#0f172a', 0.72);
+    }
+  }
+
+  private launchShot(): void {
+    this.phase = 'ball_flight';
+    this.kicker.anim = 'kick';
+    this.kicker.frame = 2;
+    this.hitStopTimer = this.selectedKickerSkill !== 'none' ? 0.075 : 0.04;
+
+    const sweetSpot = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
+    const overpower = this.powerGauge > 1.03;
+
+    let finalTargetX = this.aimX;
+    let finalTargetY = this.aimY;
+
+    if (!sweetSpot) {
+      // Overpower has slight lift, underpower has slight drop, but keep within reasonable play
+      const inaccuracy = overpower ? (this.powerGauge - 1.0) * 45 : (1 - this.powerGauge) * 8;
+      finalTargetX += (Math.random() - 0.5) * inaccuracy;
+      if (overpower) {
+        finalTargetY -= (this.powerGauge - 1.0) * 32; // Slight skyrocket risk only when severely overcharged
+      }
+    }
+
+    // If Telekinesis Curve is active, initially fake toward opposite side, then snap into aimed corner!
+    let curveDelta = 0;
+    if (this.selectedKickerSkill === 'curve') {
+      const aimOffsetFromCenter = finalTargetX - 240;
+      const fakeStartTargetX = Math.abs(aimOffsetFromCenter) < 25
+        ? 240 + (Math.random() < 0.5 ? -68 : 68)
+        : 240 - aimOffsetFromCenter * 0.85;
+      curveDelta = finalTargetX - fakeStartTargetX;
+      finalTargetX = fakeStartTargetX;
+    }
+
+    const baseSpeed = 1.35 + this.powerGauge * 0.72;
+    const skillSpeedMult = this.selectedKickerSkill === 'flame' ? 1.38 : 1.0;
+
+    this.ball.z = 0;
+    this.ball.startX = this.penaltySpot.x;
+    this.ball.startY = this.penaltySpot.y;
+    this.ball.targetX = finalTargetX;
+    this.ball.targetY = finalTargetY;
+    this.ball.speed = baseSpeed * skillSpeedMult;
+    this.ball.power = this.powerGauge;
+    this.ball.perfectImpact = sweetSpot;
+    this.ball.curveOffset = curveDelta;
+    this.ball.curveTriggered = false;
+    this.ball.chronoTriggered = false;
+    this.ball.deflected = false;
+
+    if (this.selectedKickerSkill === 'mirage') {
+      this.ball.mirageClones = [
+        { offsetX: -48, offsetY: -12, phase: 0 },
+        { offsetX: 48, offsetY: 10, phase: Math.PI },
+      ];
+    } else {
+      this.ball.mirageClones = [];
+    }
+
+    // Impact VFX & Audio
+    const sparkColors =
+      this.selectedKickerSkill === 'flame'
+        ? ['#fef08a', '#f97316', '#ef4444']
+        : this.selectedKickerSkill === 'mirage'
+        ? ['#cffafe', '#06b6d4', '#38bdf8']
+        : this.selectedKickerSkill === 'curve'
+        ? ['#fae8ff', '#c084fc', '#9333ea']
+        : this.selectedKickerSkill === 'chrono'
+        ? ['#fef9c3', '#facc15', '#eab308']
+        : sweetSpot
+        ? ['#fef08a', '#4ade80', '#ffffff']
+        : ['#ffffff', '#cbd5e1'];
+
+    this.vfx.spawnShockwave(this.penaltySpot.x, this.penaltySpot.y, sweetSpot ? 34 : 22, sparkColors[0], 0.25);
+    this.vfx.spawnBurst(this.penaltySpot.x, this.penaltySpot.y, 18, sparkColors, 45, 165, 4, 70);
+    this.vfx.triggerShake(this.selectedKickerSkill !== 'none' ? 4.5 : sweetSpot ? 3 : 1.8, 0.16);
+    this.audio.playKick(this.selectedKickerSkill !== 'none', sweetSpot);
+
+    // Prepare AI Goalkeeper reaction if AI is keeping
+    if (this.gameMode === 'vs_ai' && this.turnRole === 'player_kick') {
+      this.decideAIKeeperReaction();
+    }
+  }
+
+  private decideAIKeeperReaction(): void {
+    const actualZone = coordsToZone(this.ball.targetX + this.ball.curveOffset, this.ball.targetY, this.goal);
+    const initialFakeZone = coordsToZone(this.ball.targetX, this.ball.targetY, this.goal);
+
+    let readAccuracy = this.difficulty === 'legend' ? 0.72 : this.difficulty === 'pro' ? 0.5 : 0.28;
+
+    // Mirage Shot confuses AI!
+    if (this.selectedKickerSkill === 'mirage') {
+      readAccuracy *= 0.42;
+    }
+    // Telekinesis Curve tricks AI into diving toward initial fake trajectory unless AI has Blink!
+    if (this.selectedKickerSkill === 'curve') {
+      readAccuracy *= 0.35;
+    }
+    // Chrono Delay baits early dive!
+    if (this.selectedKickerSkill === 'chrono') {
+      this.aiDiveTriggerZ = 0.28;
+      readAccuracy *= 0.55;
+    }
+
+    if (Math.random() < readAccuracy) {
+      this.aiPlannedDiveZone = actualZone;
+    } else if (this.selectedKickerSkill === 'curve' && Math.random() < 0.75) {
+      this.aiPlannedDiveZone = initialFakeZone;
+    }
+
+    // AI Goalkeeper superpower usage
+    const skillChance = this.difficulty === 'legend' ? 0.72 : this.difficulty === 'pro' ? 0.46 : 0.22;
+    if (Math.random() < skillChance) {
+      const affordable = KEEPER_SKILLS.filter((s) => s.manaCost <= this.redMana);
+      if (affordable.length > 0) {
+        const pick = affordable[Math.floor(Math.random() * affordable.length)];
+        this.aiPlannedKeeperSkill = pick.id;
+        if (pick.id === 'blink') {
+          this.aiDiveTriggerZ = 0.76; // Blink triggers late right before goal line!
+        }
+      }
+    }
+  }
+
+  private executeKeeperDive(zone: DiveZone, skillId: KeeperSkillId): void {
+    if (this.keeper.hasDived) return;
+    this.keeper.hasDived = true;
+    this.keeper.diveZone = zone;
+
+    if (this.gameMode === 'online_multi' && this.isHumanControllingKeeper()) {
+      this.net.sendEvent({
+        type: 'keeper_dive',
+        zone,
+        skill: skillId,
+        reflexBonus: this.reflexBonus,
+      });
+    }
+
+    // Consume keeper mana if skill selected
+    const skillDef = getKeeperSkill(skillId);
+    const keeperIsBlue = this.turnRole === 'player_keep';
+    const currentMana = keeperIsBlue ? this.blueMana : this.redMana;
+
+    if (skillDef && currentMana >= skillDef.manaCost) {
+      if (keeperIsBlue) this.blueMana -= skillDef.manaCost;
+      else this.redMana -= skillDef.manaCost;
+
+      this.keeper.skillActive = skillId;
+      this.audio.playSkillEffect(skillId);
+
+      if (skillId === 'titan') {
+        this.keeper.scale = 1.65;
+        this.vfx.spawnShockwave(this.keeper.x, this.keeper.y, 40, '#22c55e', 0.32);
+        this.vfx.triggerShake(3.5, 0.18);
+      } else if (skillId === 'icewall') {
+        this.keeper.iceWallZone = getOppositeCornerZone(zone);
+        const wallPt = zoneToGoalCoords(this.keeper.iceWallZone, this.goal);
+        this.vfx.spawnBurst(wallPt.x, wallPt.y, 16, ['#e0f2fe', '#38bdf8', '#0284c7'], 30, 110, 4, 60);
+      } else if (skillId === 'blackhole') {
+        this.keeper.blackHoleActive = true;
+      } else if (skillId === 'blink') {
+        // Teleport directly to actual ball target coordinate!
+        this.keeper.blinked = true;
+        this.vfx.spawnBurst(this.keeper.x, this.keeper.y, 20, ['#f43f5e', '#ffe4e6', '#fb7185'], 40, 140, 4, 0);
+        this.vfx.addAfterimage(this.keeper.x, this.keeper.y, 1, '#f43f5e', 'keeper');
+
+        const clampedX = Math.max(this.goal.left + 14, Math.min(this.goal.right - 14, this.ball.targetX));
+        const clampedY = Math.max(this.goal.top + 14, Math.min(this.goal.bottom - 8, this.ball.targetY));
+        this.keeper.x = clampedX;
+        this.keeper.y = clampedY + 6;
+        this.keeper.targetX = clampedX;
+        this.keeper.targetY = clampedY + 6;
+        zone = coordsToZone(clampedX, clampedY, this.goal);
+        this.keeper.diveZone = zone;
+        this.vfx.spawnShockwave(clampedX, clampedY, 32, '#f43f5e', 0.25);
+      }
+    }
+
+    const dest = zoneToGoalCoords(zone, this.goal);
+    if (!this.keeper.blinked) {
+      this.keeper.targetX = dest.x;
+      this.keeper.targetY = dest.y + 8;
+    }
+
+    if (zone === 'top_left') this.keeper.anim = 'dive_top_left';
+    else if (zone === 'top_right') this.keeper.anim = 'dive_top_right';
+    else if (zone === 'low_left') this.keeper.anim = 'dive_low_left';
+    else if (zone === 'low_right') this.keeper.anim = 'dive_low_right';
+    else this.keeper.anim = 'catch_center';
+
+    this.keeper.frame = 0;
+    this.keeper.animTimer = 0;
+  }
+
+  // =========================================================================
+  // MAIN UPDATE LOOP
+  // =========================================================================
+  private update(rawDt: number): void {
+    this.elapsedTime += rawDt;
+
+    if (this.hitStopTimer > 0) {
+      this.hitStopTimer -= rawDt;
+      this.vfx.update(rawDt * 0.25);
+      return;
+    }
+
+    if (this.slowMoTimer > 0) {
+      this.slowMoTimer -= rawDt;
+      if (this.slowMoTimer <= 0) this.slowMoFactor = 1;
+    }
+
+    const dt = rawDt * this.slowMoFactor;
+    this.vfx.update(dt);
+
+    if (this.netBulgeStrength > 0) {
+      this.netBulgeStrength = Math.max(0, this.netBulgeStrength - dt * 2.4);
+    }
+
+    if (this.screen !== 'playing') {
+      // Animate idle actors on title / menu screen
+      this.updateActorFrames(dt);
+      if (Math.random() < 0.35) {
+        this.vfx.spawnAuraParticles(220, 224, ['#38bdf8', '#facc15']);
+      }
+      return;
+    }
+
+    this.updateActorFrames(dt);
+    this.updateAimInputs(dt);
+
+    // Kicker skill aura particles
+    if (this.kicker.skillAura !== 'none' && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup')) {
+      const s = getKickerSkill(this.kicker.skillAura);
+      if (s) this.vfx.spawnAuraParticles(this.kicker.x, this.kicker.y - 6, [s.color, s.accentColor]);
+    }
+
+    switch (this.phase) {
+      case 'intro':
+        this.phaseTimer -= dt;
+        if (this.phaseTimer <= 0) {
+          this.phase = 'aiming';
+        }
+        break;
+
+      case 'aiming':
+        if (this.gameMode === 'vs_ai' && this.turnRole === 'player_keep') {
+          // AI Kicker aiming countdown
+          this.aimX += (this.aiTargetAimX - this.aimX) * Math.min(1, dt * 6);
+          this.aimY += (this.aiTargetAimY - this.aimY) * Math.min(1, dt * 6);
+          this.aiAimTimer -= dt;
+          if (this.aiAimTimer <= 0) {
+            this.phase = 'charging';
+            this.powerGauge = 0.1;
+            this.kicker.anim = 'charge';
+          }
+        }
+        break;
+
+      case 'charging': {
+        const chargeSpeed = 1.48;
+        this.powerGauge += this.powerDir * chargeSpeed * dt;
+        if (this.powerGauge >= 1.22) {
+          this.powerGauge = 1.22;
+          this.powerDir = -1;
+        } else if (this.powerGauge <= 0.12) {
+          this.powerGauge = 0.12;
+          this.powerDir = 1;
+        }
+
+        // AI releases near sweet spot
+        if (this.gameMode === 'vs_ai' && this.turnRole === 'player_keep') {
+          const targetRelease = this.difficulty === 'legend' ? 0.86 : this.difficulty === 'pro' ? 0.82 : 0.72;
+          if (this.powerGauge >= targetRelease) {
+            this.beginKickerRunup();
+          }
+        }
+        break;
+      }
+
+      case 'runup':
+        this.phaseTimer -= dt;
+        this.kicker.x += 36 * dt;
+        this.kicker.y -= 28 * dt;
+        if (this.phaseTimer <= 0.08 && this.kicker.anim !== 'kick') {
+          this.kicker.anim = 'kick';
+          this.kicker.frame = 0;
+        }
+        if (this.phaseTimer <= 0) {
+          this.launchShot();
+        }
+        break;
+
+      case 'chrono_pause':
+        this.ball.chronoTimer -= rawDt;
+        // Keeper keeps moving/falling if they already dived early!
+        this.updateKeeperMovement(rawDt);
+        if (this.ball.chronoTimer <= 0) {
+          this.phase = 'ball_flight';
+          this.ball.speed *= 1.55;
+          this.vfx.triggerFlash('#fef9c3', 0.1);
+          this.vfx.spawnShockwave(this.ball.x, this.ball.y, 30, '#eab308', 0.22);
+          this.audio.playKick(true, true);
+        }
+        break;
+
+      case 'ball_flight':
+        this.updateBallFlight(dt);
+        this.updateKeeperMovement(dt);
+        break;
+
+      case 'resolution':
+        this.updateDeflectedBall(dt);
+        this.updateKeeperMovement(dt);
+        this.phaseTimer -= dt;
+        if (this.phaseTimer <= 0) {
+          this.advanceTurnOrFinishMatch();
+        }
+        break;
+    }
+  }
+
+  private updateAimInputs(dt: number): void {
+    const aimSpeed = 145;
+    if (this.isHumanControllingKicker() && this.phase === 'aiming') {
+      if (this.keys.has('ArrowLeft') || this.keys.has('KeyA')) this.aimX -= aimSpeed * dt;
+      if (this.keys.has('ArrowRight') || this.keys.has('KeyD')) this.aimX += aimSpeed * dt;
+      if (this.keys.has('ArrowUp') || this.keys.has('KeyW')) this.aimY -= aimSpeed * dt;
+      if (this.keys.has('ArrowDown') || this.keys.has('KeyS')) this.aimY += aimSpeed * dt;
+
+      this.aimX = Math.max(this.goal.left - 22, Math.min(this.goal.right + 22, this.aimX));
+      this.aimY = Math.max(this.goal.top - 16, Math.min(this.goal.bottom + 4, this.aimY));
+    }
+
+    if (this.isHumanControllingKeeper() && !this.keeper.hasDived) {
+      const left = this.keys.has('ArrowLeft') || this.keys.has('KeyA');
+      const right = this.keys.has('ArrowRight') || this.keys.has('KeyD');
+      const up = this.keys.has('ArrowUp') || this.keys.has('KeyW');
+      const down = this.keys.has('ArrowDown') || this.keys.has('KeyS');
+
+      if (left || right || up || down) {
+        if (left) {
+          this.keeperAimZone = up ? 'top_left' : 'low_left';
+        } else if (right) {
+          this.keeperAimZone = up ? 'top_right' : 'low_right';
+        } else if (up) {
+          this.keeperAimZone = 'top_center';
+        } else if (down) {
+          this.keeperAimZone = 'center';
+        }
+      }
+    }
+  }
+
+  private updateBallFlight(dt: number): void {
+    const prevZ = this.ball.z;
+    this.ball.z += this.ball.speed * dt;
+    const z = this.ball.z;
+
+    // 1. Telekinesis mid-flight snap curve!
+    if (this.selectedKickerSkill === 'curve' && !this.ball.curveTriggered && z >= 0.46) {
+      this.ball.curveTriggered = true;
+      this.ball.targetX += this.ball.curveOffset;
+      this.vfx.spawnShockwave(this.ball.x, this.ball.y, 30, '#c084fc', 0.25);
+      this.vfx.spawnBurst(this.ball.x, this.ball.y, 16, ['#fae8ff', '#c084fc', '#9333ea'], 40, 130, 3, 0);
+      this.audio.playSkillEffect('curve');
+    }
+
+    // 2. Chrono Delay mid-air time stop!
+    if (this.selectedKickerSkill === 'chrono' && !this.ball.chronoTriggered && z >= 0.5) {
+      this.ball.chronoTriggered = true;
+      this.ball.chronoTimer = 0.52;
+      this.phase = 'chrono_pause';
+      this.vfx.triggerFlash('#fef08a', 0.12);
+      this.vfx.spawnShockwave(this.ball.x, this.ball.y, 38, '#eab308', 0.3);
+      this.audio.playSkillEffect('chrono');
+      return;
+    }
+
+    // 3. AI Keeper dive trigger or Human auto-assist dive at z >= 0.72 if direction held
+    if (!this.keeper.hasDived) {
+      if (this.gameMode === 'vs_ai' && this.turnRole === 'player_kick' && z >= this.aiDiveTriggerZ) {
+        this.executeKeeperDive(this.aiPlannedDiveZone, this.aiPlannedKeeperSkill);
+      } else if (this.isHumanControllingKeeper() && z >= 0.72) {
+        // Automatic dive into selected direction if player hasn't pressed SPACE manually yet
+        this.executeKeeperDive(this.keeperAimZone, this.selectedKeeperSkill);
+      }
+    }
+
+    // 4. Black Hole gravitational pull on the ball!
+    if (this.keeper.blackHoleActive && z > 0.35 && z < 1.0) {
+      const pullStrength = 220 * dt;
+      this.ball.targetX += (this.keeper.x - this.ball.targetX) * Math.min(1, pullStrength * 0.045);
+      this.ball.targetY += ((this.keeper.y - 6) - this.ball.targetY) * Math.min(1, pullStrength * 0.045);
+      this.ball.mirageClones.forEach((c) => {
+        c.offsetX *= 0.88;
+        c.offsetY *= 0.88;
+      });
+    }
+
+    // Compute 2.5D perspective ball position & arc height
+    const easeZ = Math.min(1.0, z);
+    const groundY = this.ball.startY + (this.goal.bottom - this.ball.startY) * easeZ;
+    // At z = 1.0 (goal line), arcLift drops to 0 so ball precisely hits aimed targetY!
+    const arcLift = Math.sin(Math.min(1, z) * Math.PI) * (18 + this.ball.power * 10) * (1 - easeZ);
+
+    let bx = this.ball.startX + (this.ball.targetX - this.ball.startX) * easeZ;
+    let by = this.ball.startY + (this.ball.targetY - this.ball.startY) * easeZ - arcLift;
+
+    if (this.selectedKickerSkill === 'curve' && this.ball.curveTriggered) {
+      // Smooth whip interpolation right after trigger
+      const whip = Math.min(1, (z - 0.46) / 0.25);
+      bx = this.ball.startX + ((this.ball.targetX - this.ball.curveOffset * (1 - whip)) - this.ball.startX) * easeZ;
+    }
+
+    this.ball.x = bx;
+    this.ball.y = by;
+    this.ball.groundY = groundY;
+    this.ball.radius = Math.max(5, Math.round(9 - z * 3.5));
+    this.ball.spin += dt * 18;
+
+    // Continuous skill trail VFX
+    if (this.selectedKickerSkill === 'flame') {
+      this.vfx.spawnFlameTrail(bx, by, groundY);
+      this.vfx.addAfterimage(bx, by, 1 - z * 0.35, '#f97316', 'ball');
+    } else if (this.selectedKickerSkill === 'curve') {
+      this.vfx.addAfterimage(bx, by, 1 - z * 0.35, '#c084fc', 'ball');
+    } else if (this.ball.perfectImpact) {
+      this.vfx.addAfterimage(bx, by, 1 - z * 0.35, '#38bdf8', 'ball');
+    }
+
+    // Dramatic slow-mo on close superpower clash near goal line!
+    if (prevZ < 0.78 && z >= 0.78 && (this.selectedKickerSkill !== 'none' || this.keeper.skillActive !== 'none')) {
+      this.slowMoFactor = 0.42;
+      this.slowMoTimer = 0.22;
+    }
+
+    // 5. GOAL LINE EVALUATION AT z >= 1.0
+    if (prevZ < 1.0 && z >= 1.0) {
+      this.evaluateGoalLineCollision();
+    }
+  }
+
+  private evaluateGoalLineCollision(): void {
+    const bx = this.ball.x;
+    const by = this.ball.y;
+    const g = this.goal;
+
+    this.slowMoFactor = 1;
+    this.slowMoTimer = 0;
+
+    // 1. Check Ice Barrier collision first!
+    if (this.keeper.iceWallZone) {
+      const wallCenter = zoneToGoalCoords(this.keeper.iceWallZone, g);
+      if (Math.abs(bx - wallCenter.x) <= 31 && Math.abs(by - wallCenter.y) <= 27) {
+        this.triggerSaveResolution('ICE BARRIER!', '얼음 장벽 완벽 방어!', '#38bdf8');
+        return;
+      }
+    }
+
+    // 2. Check Goalkeeper Save Hitbox!
+    const keeperGloveX = this.keeper.x;
+    const keeperGloveY = this.keeper.y - 6;
+    let saveRadiusX = 25 * this.keeper.scale;
+    let saveRadiusY = 22 * this.keeper.scale;
+
+    if (this.reflexBonus) {
+      saveRadiusX *= 1.28;
+      saveRadiusY *= 1.25;
+    }
+    if (this.keeper.blackHoleActive) {
+      saveRadiusX = 48;
+      saveRadiusY = 38;
+    }
+    if (this.keeper.blinked) {
+      saveRadiusX = 34;
+      saveRadiusY = 30;
+    }
+
+    const dx = Math.abs(bx - keeperGloveX);
+    const dy = Math.abs(by - keeperGloveY);
+    const keeperTouched = dx <= saveRadiusX && dy <= saveRadiusY;
+
+    // Check inside goal frame vs post vs miss (giving generous arcade margin)
+    const inFrameX = bx >= g.left - 1 && bx <= g.right + 1;
+    const inFrameY = by >= g.top - 1 && by <= g.bottom + 4;
+    const hitPost =
+      !inFrameX || !inFrameY
+        ? bx >= g.left - 11 && bx <= g.right + 11 && by >= g.top - 10 && by <= g.bottom + 8
+        : false;
+
+    if (keeperTouched && (inFrameX && inFrameY)) {
+      // Flame Cannon breakthrough check against normal non-Titan/non-Blink save!
+      if (
+        this.selectedKickerSkill === 'flame' &&
+        this.keeper.skillActive !== 'titan' &&
+        this.keeper.skillActive !== 'blink' &&
+        dx > 10 &&
+        Math.random() < 0.55
+      ) {
+        // Breakthrough! Ball blasts off keeper's gloves into the net!
+        this.vfx.spawnBurst(bx, by, 28, ['#fef08a', '#f97316', '#ef4444'], 60, 200, 4, 80);
+        this.triggerGoalResolution('FLAME BREAK!!', '초고속 화염포가 방어를 뚫었다!');
+        return;
+      }
+
+      const saveTitle =
+        this.keeper.skillActive === 'blink'
+          ? 'BLINK SAVE!!'
+          : this.keeper.skillActive === 'blackhole'
+          ? 'GRAVITY CATCH!'
+          : this.keeper.skillActive === 'titan'
+          ? 'TITAN BLOCK!'
+          : this.reflexBonus
+          ? 'SUPER SAVE!!'
+          : 'SAVED!';
+      const saveSub = this.reflexBonus ? '환상적인 반사신경 슈퍼 세이브!' : '골키퍼의 철벽 선방!';
+      this.triggerSaveResolution(saveTitle, saveSub, '#4ade80');
+      return;
+    }
+
+    if (inFrameX && inFrameY) {
+      const goalTitle = this.ball.perfectImpact ? 'SUPER GOAL!!!' : 'GOAL!!!';
+      const goalSub =
+        this.selectedKickerSkill !== 'none'
+          ? `${getKickerSkill(this.selectedKickerSkill)?.nameKo} 작렬!`
+          : '골망을 시원하게 가릅니다!';
+      this.triggerGoalResolution(goalTitle, goalSub);
+      return;
+    }
+
+    if (hitPost) {
+      this.recordShotResult('post');
+      this.phase = 'resolution';
+      this.phaseTimer = 1.65;
+      this.ball.deflected = true;
+      this.ball.vx = bx < 240 ? -130 : 130;
+      this.ball.vy = -85;
+      this.kicker.anim = 'despair';
+      this.keeper.anim = 'celebrate';
+      this.vfx.spawnShockwave(bx, by, 26, '#facc15', 0.25);
+      this.vfx.spawnBurst(bx, by, 18, ['#ffffff', '#facc15', '#cbd5e1'], 50, 160, 3, 120);
+      this.vfx.triggerShake(4, 0.22);
+      this.vfx.showBanner('POST HIT!', '골대를 강타하고 튕겨나갑니다!', '#facc15', '#0f172a', 1.4);
+      this.audio.playPostHit();
+      return;
+    }
+
+    // Wide or over the bar!
+    this.recordShotResult('miss');
+    this.phase = 'resolution';
+    this.phaseTimer = 1.55;
+    this.ball.deflected = true;
+    this.ball.vx = (bx - 240) * 0.7;
+    this.ball.vy = -55;
+    this.kicker.anim = 'despair';
+    this.keeper.anim = 'celebrate';
+    this.vfx.showBanner('MISSED!', '골문을 벗어났습니다!', '#f87171', '#0f172a', 1.35);
+    this.audio.playMissSigh();
+  }
+
+  private triggerGoalResolution(title: string, subtitle: string): void {
+    this.recordShotResult('goal');
+    this.phase = 'resolution';
+    this.phaseTimer = 1.85;
+
+    // Bulge reactive pixel net!
+    this.netBulgeX = this.ball.x;
+    this.netBulgeY = this.ball.y;
+    this.netBulgeStrength = 1.0;
+
+    // Settle ball inside back of net
+    this.ball.deflected = true;
+    this.ball.vx = (240 - this.ball.x) * 0.2;
+    this.ball.vy = 28;
+
+    this.kicker.anim = 'celebrate';
+    this.keeper.anim = 'despair';
+
+    // Reward kicker bonus mana
+    if (this.turnRole === 'player_kick') {
+      this.blueMana = Math.min(this.maxMana, this.blueMana + 15);
+    } else {
+      this.redMana = Math.min(this.maxMana, this.redMana + 15);
+    }
+
+    this.hitStopTimer = 0.06;
+    this.vfx.triggerFlash('#ffffff', 0.14);
+    this.vfx.triggerShake(5.5, 0.32);
+    this.vfx.spawnShockwave(this.ball.x, this.ball.y, 44, '#facc15', 0.35);
+    this.vfx.spawnConfetti();
+    this.vfx.showBanner(title, subtitle, '#facc15', '#0f172a', 1.65);
+    this.audio.playGoalSwishAndCheer();
+  }
+
+  private triggerSaveResolution(title: string, subtitle: string, color: string): void {
+    this.recordShotResult('saved');
+    this.phase = 'resolution';
+    this.phaseTimer = 1.75;
+
+    this.ball.deflected = true;
+    if (this.keeper.blackHoleActive) {
+      this.ball.vx = 0;
+      this.ball.vy = 0;
+    } else {
+      this.ball.vx = this.ball.x < 240 ? -145 : 145;
+      this.ball.vy = -75;
+    }
+
+    this.kicker.anim = 'despair';
+    if (!this.keeper.hasDived) this.keeper.anim = 'catch_center';
+
+    // Reward keeper bonus mana
+    if (this.turnRole === 'player_keep') {
+      this.blueMana = Math.min(this.maxMana, this.blueMana + 18);
+    } else {
+      this.redMana = Math.min(this.maxMana, this.redMana + 18);
+    }
+
+    this.hitStopTimer = 0.065;
+    this.vfx.triggerFlash(color, 0.12);
+    this.vfx.triggerShake(4.5, 0.25);
+    this.vfx.spawnShockwave(this.ball.x, this.ball.y, 38, color, 0.3);
+    this.vfx.spawnBurst(this.ball.x, this.ball.y, 24, ['#ffffff', color, '#facc15'], 55, 175, 4, 95);
+    this.vfx.showBanner(title, subtitle, color, '#0f172a', 1.55);
+    this.audio.playSaveImpact(this.keeper.skillActive !== 'none' || this.reflexBonus);
+  }
+
+  private recordShotResult(res: ShotResult): void {
+    if (this.turnRole === 'player_kick') {
+      this.blueHistory.push(res);
+      if (res === 'goal') this.blueScore++;
+    } else {
+      this.redHistory.push(res);
+      if (res === 'goal') this.redScore++;
+    }
+  }
+
+  private updateDeflectedBall(dt: number): void {
+    if (!this.ball.deflected) return;
+    if (this.keeper.blackHoleActive && this.blueHistory[this.blueHistory.length - 1] !== 'goal' && this.redHistory[this.redHistory.length - 1] !== 'goal') {
+      this.ball.x += (this.keeper.x - this.ball.x) * Math.min(1, dt * 12);
+      this.ball.y += (this.keeper.y - this.ball.y) * Math.min(1, dt * 12);
+      return;
+    }
+
+    this.ball.x += this.ball.vx * dt;
+    this.ball.y += this.ball.vy * dt;
+    this.ball.vy += 240 * dt;
+
+    const floorY = 136;
+    if (this.ball.y > floorY) {
+      this.ball.y = floorY;
+      this.ball.vy = -this.ball.vy * 0.42;
+      this.ball.vx *= 0.72;
+    }
+  }
+
+  private updateKeeperMovement(dt: number): void {
+    if (this.keeper.hasDived) {
+      const diveSpeed = 11.5;
+      this.keeper.x += (this.keeper.targetX - this.keeper.x) * Math.min(1, diveSpeed * dt);
+      this.keeper.y += (this.keeper.targetY - this.keeper.y) * Math.min(1, diveSpeed * dt);
+    } else if (this.isHumanControllingKeeper()) {
+      // Subtle anticipation lean toward aimed zone
+      const hint = zoneToGoalCoords(this.keeperAimZone, this.goal);
+      const leanX = 240 + (hint.x - 240) * 0.14;
+      this.keeper.x += (leanX - this.keeper.x) * Math.min(1, 8 * dt);
+    }
+  }
+
+  private updateActorFrames(dt: number): void {
+    // Kicker frame advance
+    this.kicker.animTimer += dt;
+    const kInterval = this.kicker.anim === 'runup' ? 0.08 : this.kicker.anim === 'kick' ? 0.09 : 0.18;
+    if (this.kicker.animTimer >= kInterval) {
+      this.kicker.animTimer = 0;
+      const maxFrames = this.kicker.anim === 'idle' || this.kicker.anim === 'runup' || this.kicker.anim === 'kick' ? 4 : 2;
+      if (this.kicker.anim === 'kick') {
+        this.kicker.frame = Math.min(maxFrames - 1, this.kicker.frame + 1);
+      } else {
+        this.kicker.frame = (this.kicker.frame + 1) % maxFrames;
+      }
+    }
+
+    // Keeper frame advance
+    this.keeper.animTimer += dt;
+    const gInterval = this.keeper.anim.startsWith('dive') ? 0.09 : 0.18;
+    if (this.keeper.animTimer >= gInterval) {
+      this.keeper.animTimer = 0;
+      if (this.keeper.anim.startsWith('dive')) {
+        this.keeper.frame = Math.min(2, this.keeper.frame + 1);
+      } else if (this.keeper.anim === 'idle') {
+        this.keeper.frame = (this.keeper.frame + 1) % 4;
+      } else {
+        this.keeper.frame = (this.keeper.frame + 1) % 2;
+      }
+    }
+  }
+
+  private advanceTurnOrFinishMatch(): void {
+    // Passive mana regeneration every turn
+    this.blueMana = Math.min(this.maxMana, this.blueMana + 20);
+    this.redMana = Math.min(this.maxMana, this.redMana + 20);
+
+    // Check official penalty shootout victory rules!
+    if (!this.isSuddenDeath) {
+      const blueTaken = this.blueHistory.length;
+      const redTaken = this.redHistory.length;
+      const blueRemaining = 5 - blueTaken;
+      const redRemaining = 5 - redTaken;
+
+      if (this.blueScore > this.redScore + redRemaining) {
+        this.finishMatch(true);
+        return;
+      }
+      if (this.redScore > this.blueScore + blueRemaining) {
+        this.finishMatch(false);
+        return;
+      }
+
+      if (blueTaken === 5 && redTaken === 5) {
+        if (this.blueScore !== this.redScore) {
+          this.finishMatch(this.blueScore > this.redScore);
+          return;
+        } else {
+          // Enter SUDDEN DEATH!
+          this.isSuddenDeath = true;
+          this.round = 6;
+          this.turnRole = 'player_kick';
+          this.audio.startBgm(true);
+          this.setupTurn();
+          return;
+        }
+      }
+    } else {
+      // Sudden death: evaluate after both teams have kicked in the current round
+      if (this.blueHistory.length === this.redHistory.length) {
+        if (this.blueScore !== this.redScore) {
+          this.finishMatch(this.blueScore > this.redScore);
+          return;
+        }
+        this.round++;
+        this.turnRole = 'player_kick';
+        this.setupTurn();
+        return;
+      }
+    }
+
+    // Alternate turn role
+    if (this.turnRole === 'player_kick') {
+      this.turnRole = 'player_keep';
+    } else {
+      this.turnRole = 'player_kick';
+      this.round++;
+    }
+
+    this.setupTurn();
+  }
+
+  private finishMatch(blueWon: boolean): void {
+    this.screen = 'match_over';
+    this.audio.playWhistle(true);
+    if (blueWon) {
+      this.vfx.spawnConfetti();
+      this.audio.playGoalSwishAndCheer();
+    }
+    if (this.gameMode === 'local_2p') {
+      this.winnerText = blueWon ? 'PLAYER 1 WINS!!' : 'PLAYER 2 WINS!!';
+    } else {
+      this.winnerText = blueWon ? 'VICTORY!! 챔피언 등극!' : 'DEFEAT... 재도전하세요!';
+    }
+  }
+
+  // =========================================================================
+  // RENDERING PIPELINE (480x270 PIXEL CANVAS)
+  // =========================================================================
+  private render(): void {
+    const ctx = this.ctx;
+    ctx.save();
+
+    const [shakeX, shakeY] = this.vfx.getShakeOffset();
+    ctx.translate(shakeX, shakeY);
+
+    // 1. Stadium Pixel Backdrop + Animated Crowd Wave
+    ctx.drawImage(this.sprites.stadiumBackdrop, 0, 0);
+    this.renderAnimatedCrowdHighlights(ctx);
+
+    // 2.Scorch marks on turf
+    this.vfx.renderGroundScorch(ctx);
+
+    // 3. Goalpost & Reactive Pixel Net
+    this.sprites.drawGoalAndNet(ctx, this.goal, this.netBulgeX, this.netBulgeY, this.netBulgeStrength);
+
+    // 4. Ice Barrier Crystal (if active)
+    if (this.keeper.iceWallZone) {
+      const wp = zoneToGoalCoords(this.keeper.iceWallZone, this.goal);
+      ctx.drawImage(this.sprites.iceBarrierSprite, Math.round(wp.x - 28), Math.round(wp.y - 24));
+    }
+
+    // 5. Black Hole Vortex behind/around Keeper
+    if (this.keeper.blackHoleActive) {
+      this.vfx.renderBlackHole(ctx, this.keeper.x, this.keeper.y - 6, this.elapsedTime);
+    }
+
+    // 6. Goalkeeper Pixel Sprite (Front-View)
+    this.renderKeeperSprite(ctx);
+
+    // 7. Soccer Ball & Mirage Clones (if z > 0, draw in flight; if z == 0, draw on penalty spot)
+    this.renderSoccerBallAndClones(ctx);
+
+    // 9. World Pixel VFX (Shockwaves, Particles, Afterimages)
+    this.vfx.renderWorldEffects(ctx);
+    if (this.phase === 'chrono_pause') {
+      this.vfx.renderChronoClock(ctx, this.ball.x, this.ball.y, 1 - this.ball.chronoTimer / 0.52);
+    }
+
+    // 10. Kicker Pixel Sprite in Foreground (Back-View!)
+    this.renderKickerSprite(ctx);
+
+    ctx.restore();
+
+    // 11. Screen Overlays & UI Screens
+    this.vfx.renderScreenOverlays(ctx, this.elapsedTime);
+
+    if (this.screen === 'title') {
+      this.renderTitleOverlay(ctx);
+    } else if (this.screen === 'mode_select') {
+      this.renderModeSelectOverlay(ctx);
+    } else if (this.screen === 'online_lobby') {
+      this.renderOnlineLobbyOverlay(ctx);
+    } else if (this.screen === 'playing') {
+      this.renderMatchHUD(ctx);
+    } else if (this.screen === 'match_over') {
+      this.renderMatchHUD(ctx);
+      this.renderMatchOverOverlay(ctx);
+    }
+  }
+
+  private renderAnimatedCrowdHighlights(ctx: CanvasRenderingContext2D): void {
+    // Twinkling camera flashes in stadium stands!
+    const flashSeed = Math.floor(this.elapsedTime * 8);
+    for (let i = 0; i < 6; i++) {
+      const fx = ((flashSeed * 73 + i * 89) % (VIRTUAL_WIDTH - 20)) + 10;
+      const fy = 64 + ((flashSeed * 37 + i * 19) % 44);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(fx, fy, 2, 2);
+    }
+  }
+
+  private renderKeeperSprite(ctx: CanvasRenderingContext2D): void {
+    const keeperSheet = this.turnRole === 'player_kick' ? this.sprites.keeperRed : this.sprites.keeperBlue;
+    const frames = keeperSheet[this.keeper.anim as KeeperAnimKey];
+    const img = frames[Math.min(frames.length - 1, this.keeper.frame)];
+
+    const w = Math.round(64 * this.keeper.scale);
+    const h = Math.round(64 * this.keeper.scale);
+    const dx = Math.round(this.keeper.x - w / 2);
+    const dy = Math.round(this.keeper.y - h + 22 * this.keeper.scale);
+
+    if (this.keeper.skillActive === 'titan') {
+      // Green emerald aura outline pulse
+      ctx.fillStyle = 'rgba(34, 197, 94, 0.28)';
+      ctx.fillRect(dx + 8, dy + 10, w - 16, h - 14);
+    }
+
+    ctx.drawImage(img, dx, dy, w, h);
+  }
+
+  private renderKickerSprite(ctx: CanvasRenderingContext2D): void {
+    const kickerSheet = this.turnRole === 'player_kick' ? this.sprites.kickerBlue : this.sprites.kickerRed;
+    const frames = kickerSheet[this.kicker.anim as KickerAnimKey];
+    const img = frames[Math.min(frames.length - 1, this.kicker.frame)];
+
+    const dx = Math.round(this.kicker.x - 40);
+    const dy = Math.round(this.kicker.y - 62);
+    ctx.drawImage(img, dx, dy);
+  }
+
+  private renderSoccerBallAndClones(ctx: CanvasRenderingContext2D): void {
+    const frameIdx = Math.floor(this.ball.spin) % 4;
+    const ballImg = this.sprites.soccerBalls[frameIdx];
+
+    const scale = this.ball.z > 0 ? Math.max(0.52, 1 - this.ball.z * 0.42) : 0.92;
+    const drawSize = Math.round(24 * scale);
+
+    // Ball ground shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.38)';
+    const shadowW = Math.max(6, Math.round(14 * scale));
+    ctx.fillRect(Math.round(this.ball.x - shadowW / 2), Math.round(this.ball.groundY + 3), shadowW, 3);
+
+    // Mirage clones during flight
+    if (this.selectedKickerSkill === 'mirage' && this.phase === 'ball_flight' && this.ball.z > 0.16) {
+      for (const clone of this.ball.mirageClones) {
+        const wobble = Math.sin(this.ball.z * 14 + clone.phase);
+        const cx = Math.round(this.ball.x + clone.offsetX * wobble * (1 - this.ball.z * 0.25));
+        const cy = Math.round(this.ball.y + clone.offsetY * Math.cos(this.ball.z * 12 + clone.phase));
+        ctx.save();
+        ctx.globalAlpha = 0.78;
+        ctx.drawImage(ballImg, Math.round(cx - drawSize / 2), Math.round(cy - drawSize / 2), drawSize, drawSize);
+        ctx.fillStyle = 'rgba(6, 182, 212, 0.45)';
+        ctx.fillRect(Math.round(cx - drawSize / 3), Math.round(cy - drawSize / 3), Math.round(drawSize * 0.66), Math.round(drawSize * 0.66));
+        ctx.restore();
+      }
+    }
+
+    // Main soccer ball
+    const bx = Math.round(this.ball.x - drawSize / 2);
+    const by = Math.round(this.ball.y - drawSize / 2);
+    ctx.drawImage(ballImg, bx, by, drawSize, drawSize);
+
+    // Elemental overlay tint on ball
+    if (this.selectedKickerSkill === 'flame' && this.ball.z > 0 && !this.ball.deflected) {
+      ctx.fillStyle = 'rgba(249, 115, 22, 0.55)';
+      ctx.fillRect(Math.round(this.ball.x - drawSize * 0.35), Math.round(this.ball.y - drawSize * 0.35), Math.round(drawSize * 0.7), Math.round(drawSize * 0.7));
+    }
+  }
+
+  // Safe pixel crosshair & keeper glove target guide
+  private drawPixelCrosshair(ctx: CanvasRenderingContext2D, rx: number, ry: number, color: string): void {
+    const x = Math.round(rx);
+    const y = Math.round(ry);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(x - 9, y - 2, 6, 4);
+    ctx.fillRect(x + 3, y - 2, 6, 4);
+    ctx.fillRect(x - 2, y - 9, 4, 6);
+    ctx.fillRect(x - 2, y + 3, 4, 6);
+
+    ctx.fillStyle = color;
+    ctx.fillRect(x - 8, y - 1, 5, 2);
+    ctx.fillRect(x + 3, y - 1, 5, 2);
+    ctx.fillRect(x - 1, y - 8, 2, 5);
+    ctx.fillRect(x - 1, y + 3, 2, 5);
+    ctx.fillRect(x - 1, y - 1, 2, 2);
+  }
+
+  private renderMatchHUD(ctx: CanvasRenderingContext2D): void {
+    // Render Aim Crosshair or Keeper Glove Target first
+    if (this.gameMode === 'vs_ai' && this.turnRole === 'player_kick' && (this.phase === 'aiming' || this.phase === 'charging')) {
+      const rx = Math.round(this.aimX);
+      const ry = Math.round(this.aimY);
+      const sweet = this.phase === 'charging' && this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
+      const col = sweet ? '#4ade80' : Math.floor(this.elapsedTime * 8) % 2 === 0 ? '#facc15' : '#38bdf8';
+
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.55)';
+      for (let i = 1; i <= 6; i++) {
+        const t = i / 7;
+        const tx = Math.round(this.penaltySpot.x + (rx - this.penaltySpot.x) * t);
+        const ty = Math.round(this.penaltySpot.y + (ry - this.penaltySpot.y) * t - Math.sin(t * Math.PI) * 15);
+        ctx.fillRect(tx - 1, ty - 1, 2, 2);
+      }
+      this.drawPixelCrosshair(ctx, rx, ry, col);
+    } else if (
+      this.gameMode === 'vs_ai' &&
+      this.turnRole === 'player_keep' &&
+      !this.keeper.hasDived &&
+      (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')
+    ) {
+      const gp = zoneToGoalCoords(this.keeperAimZone, this.goal);
+      this.drawPixelCrosshair(ctx, gp.x, gp.y, '#4ade80');
+    }
+
+    // ---------------- TOP SCOREBOARD ----------------
+    ctx.fillStyle = 'rgba(9, 13, 26, 0.88)';
+    ctx.fillRect(8, 6, VIRTUAL_WIDTH - 16, 30);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(8, 6, VIRTUAL_WIDTH - 16, 2);
+
+    // Blue Team (Left)
+    ctx.fillStyle = '#2563eb';
+    ctx.fillRect(12, 10, 52, 12);
+    ctx.font = '700 8px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(this.gameMode === 'local_2p' ? 'P1' : 'YOU', 38, 19);
+
+    this.renderPenaltyDots(ctx, 70, 12, this.blueHistory, true);
+
+    // Center Score & Round
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(198, 9, 84, 24);
+    ctx.strokeStyle = this.isSuddenDeath ? '#ef4444' : '#475569';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(198.5, 9.5, 83, 23);
+
+    ctx.font = '700 11px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText(`${this.blueScore} - ${this.redScore}`, 240, 21);
+
+    ctx.font = '700 6px "Press Start 2P", monospace';
+    ctx.fillStyle = this.isSuddenDeath ? '#f87171' : '#94a3b8';
+    ctx.fillText(this.isSuddenDeath ? 'SUDDEN DEATH' : `ROUND ${Math.min(5, this.round)}/5`, 240, 30);
+
+    // Red Team (Right)
+    this.renderPenaltyDots(ctx, 292, 12, this.redHistory, false);
+    ctx.fillStyle = '#dc2626';
+    ctx.fillRect(VIRTUAL_WIDTH - 64, 10, 52, 12);
+    ctx.font = '700 8px "Press Start 2P", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(this.gameMode === 'local_2p' ? 'P2' : this.difficulty.toUpperCase(), VIRTUAL_WIDTH - 38, 19);
+
+    // Mana Bars under each team
+    this.renderManaBar(ctx, 12, 25, 168, 7, this.blueMana, '#38bdf8');
+    this.renderManaBar(ctx, VIRTUAL_WIDTH - 180, 25, 168, 7, this.redMana, '#fb923c');
+
+    // ---------------- POWER / TIMING GAUGE (When Kicker Charging or Aiming) ----------------
+    if (this.isHumanControllingKicker() && (this.phase === 'aiming' || this.phase === 'charging')) {
+      const gx = 352;
+      const gy = 178;
+      const gw = 114;
+      const gh = 13;
+
+      ctx.fillStyle = 'rgba(9, 13, 26, 0.9)';
+      ctx.fillRect(gx - 2, gy - 12, gw + 4, gh + 16);
+
+      ctx.font = '700 7px "Press Start 2P", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#facc15';
+      ctx.fillText(this.phase === 'charging' ? 'RELEASE SPACE!' : 'HOLD SPACE:SHOOT', gx, gy - 3);
+
+      // Meter track zones
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(gx, gy, gw, gh);
+      // Sweet spot green band (0.76..0.94 out of 1.22)
+      const sweetStart = Math.round((0.76 / 1.22) * gw);
+      const sweetWidth = Math.round(((0.94 - 0.76) / 1.22) * gw);
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(gx + sweetStart, gy, sweetWidth, gh);
+      // Overpower red band (1.03..1.22)
+      const overStart = Math.round((1.03 / 1.22) * gw);
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(gx + overStart, gy, gw - overStart, gh);
+
+      // Current fill
+      const fillW = Math.round((this.powerGauge / 1.22) * gw);
+      ctx.fillStyle = this.powerGauge > 1.03 ? '#f87171' : this.powerGauge >= 0.76 && this.powerGauge <= 0.94 ? '#4ade80' : '#facc15';
+      ctx.fillRect(gx, gy + 3, fillW, gh - 6);
+
+      // Marker needle
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(gx + fillW - 1, gy - 1, 3, gh + 2);
+    } else if (this.isHumanControllingKeeper() && !this.keeper.hasDived && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
+      ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
+      ctx.fillRect(334, 172, 136, 20);
+      ctx.font = '700 8px "Noto Sans KR", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#4ade80';
+      ctx.fillText('방향키 + SPACE 타이밍 세이브!', 402, 185);
+    }
+
+    // ---------------- BOTTOM SUPERPOWER SKILL BAR ----------------
+    this.renderSkillBar(ctx);
+  }
+
+  private renderPenaltyDots(
+    ctx: CanvasRenderingContext2D,
+    startX: number,
+    y: number,
+    history: ShotResult[],
+    leftToRight: boolean
+  ): void {
+    const displaySlots = Math.max(5, history.length);
+    const recentStart = Math.max(0, displaySlots - 5);
+
+    for (let i = 0; i < 5; i++) {
+      const idx = recentStart + i;
+      const res: ShotResult = history[idx] ?? 'pending';
+      const dx = leftToRight ? startX + i * 19 : startX + (4 - i) * 19;
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(dx - 1, y - 1, 12, 10);
+
+      if (res === 'goal') {
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(dx + 1, y + 1, 8, 6);
+        ctx.fillStyle = '#bbf7d0';
+        ctx.fillRect(dx + 2, y + 2, 3, 2);
+      } else if (res === 'pending') {
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(dx + 2, y + 2, 6, 4);
+      } else {
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(dx + 1, y + 1, 8, 6);
+        ctx.fillStyle = '#fecaca';
+        ctx.fillRect(dx + 4, y + 3, 2, 2);
+      }
+    }
+  }
+
+  private renderManaBar(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    mana: number,
+    color: string
+  ): void {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(x, y, w, h);
+    const fillW = Math.round((mana / this.maxMana) * (w - 2));
+    ctx.fillStyle = color;
+    ctx.fillRect(x + 1, y + 1, fillW, h - 2);
+
+    ctx.font = '700 6px "Press Start 2P", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(`MP ${Math.round(mana)}`, x + 4, y + 6);
+  }
+
+  private renderSkillBar(ctx: CanvasRenderingContext2D): void {
+    const showingKeeperSkills =
+      this.gameMode === 'vs_ai'
+        ? this.turnRole === 'player_keep'
+        : this.phase !== 'aiming' && this.phase !== 'charging';
+
+    const skills = showingKeeperSkills ? KEEPER_SKILLS : KICKER_SKILLS;
+    const activeId = showingKeeperSkills ? this.selectedKeeperSkill : this.selectedKickerSkill;
+    const currentMana =
+      this.gameMode === 'vs_ai'
+        ? this.blueMana
+        : showingKeeperSkills
+        ? this.turnRole === 'player_kick'
+          ? this.redMana
+          : this.blueMana
+        : this.turnRole === 'player_kick'
+        ? this.blueMana
+        : this.redMana;
+
+    this.skillSlotRects = [];
+    const slotW = 108;
+    const slotH = 26;
+    const gap = 8;
+    const totalW = skills.length * slotW + (skills.length - 1) * gap;
+    const startX = Math.round((VIRTUAL_WIDTH - totalW) / 2);
+    const y = VIRTUAL_HEIGHT - 31;
+
+    skills.forEach((s, idx) => {
+      const x = startX + idx * (slotW + gap);
+      this.skillSlotRects.push({ index: idx, x, y, w: slotW, h: slotH });
+
+      const isSelected = activeId === s.id;
+      const canAfford = currentMana >= s.manaCost;
+
+      ctx.fillStyle = isSelected ? 'rgba(30, 41, 59, 0.96)' : 'rgba(9, 13, 26, 0.88)';
+      ctx.fillRect(x, y, slotW, slotH);
+
+      ctx.strokeStyle = isSelected ? s.color : canAfford ? '#475569' : '#1e293b';
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, slotW - 1, slotH - 1);
+
+      // Key badge [1]..[4]
+      ctx.fillStyle = canAfford ? s.color : '#334155';
+      ctx.fillRect(x + 3, y + 3, 13, 11);
+      ctx.font = '700 7px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#0f172a';
+      ctx.fillText(s.key, x + 9.5, y + 11);
+
+      // Skill Name (Korean)
+      ctx.font = '700 9px "Noto Sans KR", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = canAfford ? (isSelected ? s.accentColor : '#f8fafc') : '#64748b';
+      ctx.fillText(s.nameKo, x + 20, y + 12);
+
+      // Mana Cost
+      ctx.font = '700 6px "Press Start 2P", monospace';
+      ctx.fillStyle = canAfford ? '#38bdf8' : '#ef4444';
+      ctx.fillText(`MP ${s.manaCost}`, x + 20, y + 22);
+
+      if (isSelected) {
+        ctx.fillStyle = s.accentColor;
+        ctx.fillText('ON', x + slotW - 18, y + 22);
+      }
+    });
+  }
+
+  // =========================================================================
+  // TITLE, MENU & MATCH OVER OVERLAYS
+  // =========================================================================
+  private renderTitleOverlay(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.62)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    // Top Arcade Title Plate
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.fillRect(46, 36, VIRTUAL_WIDTH - 92, 92);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(46, 36, VIRTUAL_WIDTH - 92, 92);
+
+    ctx.textAlign = 'center';
+    ctx.font = '900 20px "Press Start 2P", monospace';
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText('SUPERPOWER', VIRTUAL_WIDTH / 2 + 2, 68);
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('SUPERPOWER', VIRTUAL_WIDTH / 2, 66);
+
+    ctx.font = '900 18px "Press Start 2P", monospace';
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText('SHOOTOUT', VIRTUAL_WIDTH / 2 + 2, 94);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('SHOOTOUT', VIRTUAL_WIDTH / 2, 92);
+
+    ctx.font = '900 11px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText('⚡ 도트 그래픽 이능력 승부차기 배틀 ⚡', VIRTUAL_WIDTH / 2, 115);
+
+    if (Math.floor(this.elapsedTime * 2.5) % 2 === 0) {
+      ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
+      ctx.fillRect(128, 198, 224, 24);
+      ctx.font = '700 10px "Press Start 2P", monospace';
+      ctx.fillStyle = '#4ade80';
+      ctx.fillText('PRESS SPACE / CLICK', VIRTUAL_WIDTH / 2, 214);
+    }
+  }
+
+  private renderModeSelectOverlay(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.78)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    ctx.textAlign = 'center';
+    ctx.font = '900 13px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('SELECT GAME MODE', VIRTUAL_WIDTH / 2, 48);
+
+    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('AI 대결, 로컬 2인용 또는 온라인 룸 배틀을 선택하세요', VIRTUAL_WIDTH / 2, 66);
+
+    const options = [
+      { title: '1P VS AI - ROOKIE', sub: '입문자용 AI 골키퍼 & 키커', color: '#4ade80' },
+      { title: '1P VS AI - PRO', sub: '표준 아케이드 밸런스 대결', color: '#38bdf8' },
+      { title: '1P VS AI - LEGEND', sub: '초반응 초능력 마스터 AI에 도전!', color: '#f43f5e' },
+      { title: 'LOCAL 2P VERSUS', sub: '한 기기에서 친구와 심리전 승부차기!', color: '#c084fc' },
+      { title: '🌐 ONLINE MULTIPLAYER', sub: '다른 기기(폰/PC)와 방 코드로 실시간 대전!', color: '#facc15' },
+    ];
+
+    options.forEach((opt, i) => {
+      const y = 82 + i * 28;
+      const selected = this.menuIndex === i;
+
+      ctx.fillStyle = selected ? 'rgba(30, 41, 59, 0.96)' : 'rgba(15, 23, 42, 0.85)';
+      ctx.fillRect(110, y, 260, 24);
+      ctx.strokeStyle = selected ? opt.color : '#334155';
+      ctx.lineWidth = selected ? 2 : 1;
+      ctx.strokeRect(110.5, y + 0.5, 259, 23);
+
+      ctx.font = '700 8px "Press Start 2P", monospace';
+      ctx.fillStyle = selected ? opt.color : '#f8fafc';
+      ctx.fillText((selected ? '▶ ' : '') + opt.title, VIRTUAL_WIDTH / 2, y + 10);
+
+      ctx.font = '700 7.5px "Noto Sans KR", sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(opt.sub, VIRTUAL_WIDTH / 2, y + 20);
+    });
+  }
+
+  private renderOnlineLobbyOverlay(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.88)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    ctx.textAlign = 'center';
+    ctx.font = '900 13px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('ONLINE MULTIPLAYER LOBBY', VIRTUAL_WIDTH / 2, 45);
+
+    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('참가할 방 번호(Room Code)를 입력하세요', VIRTUAL_WIDTH / 2, 65);
+
+    // Room Code Input Box
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(160, 85, 160, 36);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(160, 85, 160, 36);
+
+    ctx.font = '900 18px "Press Start 2P", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText(this.onlineRoomInput + (Math.floor(this.elapsedTime * 3) % 2 === 0 ? '_' : ''), VIRTUAL_WIDTH / 2, 110);
+
+    // Status Message
+    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = this.net.connected ? '#4ade80' : '#f87171';
+    ctx.fillText(this.net.statusMessage, VIRTUAL_WIDTH / 2, 145);
+
+    // Connect Button
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(140, 168, 200, 28);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(140, 168, 200, 28);
+
+    ctx.font = '700 9px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('JOIN / CREATE ROOM', VIRTUAL_WIDTH / 2, 186);
+
+    // Back Button
+    ctx.font = '700 8px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('ESC 또는 [뒤로가기]', VIRTUAL_WIDTH / 2, 222);
+  }
+
+  private renderMatchOverOverlay(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.76)';
+    ctx.fillRect(0, 58, VIRTUAL_WIDTH, 162);
+
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(64, 68, VIRTUAL_WIDTH - 128, 142);
+
+    ctx.textAlign = 'center';
+    ctx.font = '900 15px "Press Start 2P", "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText(this.winnerText, VIRTUAL_WIDTH / 2, 104);
+
+    ctx.font = '900 18px "Press Start 2P", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${this.blueScore}  :  ${this.redScore}`, VIRTUAL_WIDTH / 2, 138);
+
+    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('SPACE / 클릭: 다시 경기하기   |   ESC: 모드 선택', VIRTUAL_WIDTH / 2, 176);
+  }
+}
