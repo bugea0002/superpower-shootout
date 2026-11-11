@@ -377,7 +377,7 @@ export class SuperpowerShootoutGame {
       if (shouldReleaseKick || e.touches.length === 0) {
         this.touchSwipeStart = null;
         this.activeKickTouchId = null;
-        this.handleActionRelease();
+        this.handleActionRelease(true);
       }
     };
 
@@ -903,8 +903,15 @@ export class SuperpowerShootoutGame {
     }
   }
 
-  private handleActionRelease(): void {
+  private handleActionRelease(isFromTouch = false): void {
     if (this.isHumanControllingKicker() && this.phase === 'charging') {
+      if (isFromTouch) {
+        // Mobile-only touch latency compensation (approx 80ms touch-to-render lag)
+        // Does NOT widen sweetspot, but samples the gauge exactly when user's finger lifted!
+        const latencySec = 0.082;
+        const chargeSpeed = 1.45;
+        this.powerGauge = Math.max(0.12, Math.min(1.22, this.powerGauge - this.powerDir * chargeSpeed * latencySec));
+      }
       this.beginKickerRunup();
     }
   }
@@ -1113,10 +1120,10 @@ export class SuperpowerShootoutGame {
     this.kicker.frame = 2;
     this.hitStopTimer = this.selectedKickerSkill !== 'none' ? 0.075 : 0.04;
 
-    const sweetSpot = this.powerGauge >= 0.68 && this.powerGauge <= 0.98;
-    const isUnderpowerRed = this.powerGauge >= 0.50 && this.powerGauge < 0.68;
-    const isOverpowerRed = this.powerGauge > 1.04;
-    const isWeakGray = this.powerGauge < 0.50;
+    const sweetSpot = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
+    const isUnderpowerRed = this.powerGauge >= 0.58 && this.powerGauge < 0.76;
+    const isOverpowerRed = this.powerGauge > 1.03;
+    const isWeakGray = this.powerGauge < 0.58;
 
     let finalTargetX = this.aimX;
     let finalTargetY = this.aimY;
@@ -1126,17 +1133,17 @@ export class SuperpowerShootoutGame {
     } else if (isWeakGray) {
       // Gray undercharge: slight inaccuracy, but significantly slower flight speed
       finalTargetX += (Math.random() - 0.5) * 12;
-      finalTargetY += (0.50 - this.powerGauge) * 20; // drops lower due to low power
+      finalTargetY += (0.58 - this.powerGauge) * 18; // drops lower due to low power
     } else if (isUnderpowerRed) {
       // Early red zone: high inaccuracy, often misses goal frame!
-      const missSpread = (0.68 - this.powerGauge) * 130 + 25;
+      const missSpread = (0.76 - this.powerGauge) * 120 + 25;
       finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 20);
       finalTargetY += (Math.random() - 0.5) * 35;
     } else if (isOverpowerRed) {
       // Overpower red zone: wild deviation, high risk of skying over bar or wide
-      const missSpread = (this.powerGauge - 1.04) * 160 + 30;
+      const missSpread = (this.powerGauge - 1.03) * 160 + 30;
       finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 25);
-      finalTargetY -= (this.powerGauge - 1.04) * 55 + Math.random() * 20; // skyrockets out!
+      finalTargetY -= (this.powerGauge - 1.0) * 55 + Math.random() * 20; // skyrockets out!
     }
 
     // If Telekinesis Curve is active, initially fake toward opposite side, then snap into aimed corner!
@@ -1382,7 +1389,7 @@ export class SuperpowerShootoutGame {
         break;
 
       case 'charging': {
-        const chargeSpeed = 1.28;
+        const chargeSpeed = 1.45;
         this.powerGauge += this.powerDir * chargeSpeed * dt;
         if (this.powerGauge >= 1.22) {
           this.powerGauge = 1.22;
@@ -1394,7 +1401,7 @@ export class SuperpowerShootoutGame {
 
         // AI releases near sweet spot
         if (this.gameMode === 'vs_ai' && this.turnRole === 'player_keep') {
-          const targetRelease = this.difficulty === 'legend' ? 0.86 : this.difficulty === 'pro' ? 0.80 : 0.74;
+          const targetRelease = this.difficulty === 'legend' ? 0.86 : this.difficulty === 'pro' ? 0.82 : 0.72;
           if (this.powerGauge >= targetRelease) {
             this.beginKickerRunup();
           }
@@ -2271,30 +2278,30 @@ export class SuperpowerShootoutGame {
       ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : this.isTouchDevice ? 'TOUCH & KICK' : 'HOLD SPACE/클릭', gx, gy - 3);
 
       // Meter track zones (Gray -> Early Red -> Sweet Green -> Overpower Red)
-      ctx.fillStyle = '#475569'; // Gray zone (0.0..0.50)
+      ctx.fillStyle = '#475569'; // Gray zone (0.0..0.58)
       ctx.fillRect(gx, gy, gw, gh);
 
-      // Early Red Danger Zone (0.50..0.68 out of 1.22)
-      const earlyRedStart = Math.round((0.50 / 1.22) * gw);
-      const earlyRedWidth = Math.round(((0.68 - 0.50) / 1.22) * gw);
+      // Early Red Danger Zone (0.58..0.76 out of 1.22)
+      const earlyRedStart = Math.round((0.58 / 1.22) * gw);
+      const earlyRedWidth = Math.round(((0.76 - 0.58) / 1.22) * gw);
       ctx.fillStyle = '#dc2626';
       ctx.fillRect(gx + earlyRedStart, gy, earlyRedWidth, gh);
 
-      // Sweet spot green band (0.68..0.98 out of 1.22)
-      const sweetStart = Math.round((0.68 / 1.22) * gw);
-      const sweetWidth = Math.round(((0.98 - 0.68) / 1.22) * gw);
+      // Sweet spot green band (0.76..0.94 out of 1.22)
+      const sweetStart = Math.round((0.76 / 1.22) * gw);
+      const sweetWidth = Math.round(((0.94 - 0.76) / 1.22) * gw);
       ctx.fillStyle = '#16a34a';
       ctx.fillRect(gx + sweetStart, gy, sweetWidth, gh);
 
-      // Late Overpower red band (1.04..1.22)
-      const overStart = Math.round((1.04 / 1.22) * gw);
+      // Late Overpower red band (1.03..1.22)
+      const overStart = Math.round((1.03 / 1.22) * gw);
       ctx.fillStyle = '#dc2626';
       ctx.fillRect(gx + overStart, gy, gw - overStart, gh);
 
       // Current fill
       const fillW = Math.round((this.powerGauge / 1.22) * gw);
-      const isRed = (this.powerGauge >= 0.50 && this.powerGauge < 0.68) || this.powerGauge > 1.04;
-      const isGreen = this.powerGauge >= 0.68 && this.powerGauge <= 0.98;
+      const isRed = (this.powerGauge >= 0.58 && this.powerGauge < 0.76) || this.powerGauge > 1.03;
+      const isGreen = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
       ctx.fillStyle = isGreen ? '#4ade80' : isRed ? '#f87171' : '#94a3b8';
       ctx.fillRect(gx, gy + 3, fillW, gh - 6);
 
