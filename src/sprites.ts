@@ -2,59 +2,92 @@ import { GoalRect, VIRTUAL_HEIGHT, VIRTUAL_WIDTH } from './types';
 
 export interface SpritePalette {
   outline: string;
+  outlineSoft: string;
   skin: string;
+  skinLight: string;
   skinDark: string;
+  skinShadow: string;
   hair: string;
   hairLight: string;
+  hairDark: string;
   band: string;
+  bandLight: string;
   jersey: string;
   jerseyDark: string;
   jerseyLight: string;
+  jerseyShadow: string;
   number: string;
   shorts: string;
   shortsDark: string;
+  shortsLight: string;
   socks: string;
+  socksDark: string;
   boots: string;
+  bootsDark: string;
+  bootsLight: string;
   glove: string;
   gloveLight: string;
+  gloveDark: string;
 }
 
 const BLUE_TEAM_KICKER: SpritePalette = {
-  outline: '#0b1021',
+  outline: '#080d1a',
+  outlineSoft: '#1e293b',
   skin: '#f6c39b',
+  skinLight: '#fed7aa',
   skinDark: '#d4956a',
+  skinShadow: '#9a5b32',
   hair: '#1e293b',
   hairLight: '#475569',
+  hairDark: '#0f172a',
   band: '#ef4444',
+  bandLight: '#f87171',
   jersey: '#2563eb',
   jerseyDark: '#1d4ed8',
   jerseyLight: '#60a5fa',
-  number: '#f8fafc',
+  jerseyShadow: '#1e3a8a',
+  number: '#ffffff',
   shorts: '#f8fafc',
   shortsDark: '#cbd5e1',
+  shortsLight: '#ffffff',
   socks: '#1d4ed8',
+  socksDark: '#172554',
   boots: '#facc15',
+  bootsDark: '#ca8a04',
+  bootsLight: '#fef08a',
   glove: '#22c55e',
   gloveLight: '#86efac',
+  gloveDark: '#15803d',
 };
 
 const RED_TEAM_KICKER: SpritePalette = {
-  outline: '#0b1021',
+  outline: '#100508',
+  outlineSoft: '#2a111a',
   skin: '#f2b88f',
+  skinLight: '#ffedd5',
   skinDark: '#c9885d',
+  skinShadow: '#854d24',
   hair: '#31102f',
   hairLight: '#701a75',
+  hairDark: '#1a0519',
   band: '#facc15',
+  bandLight: '#fef08a',
   jersey: '#dc2626',
   jerseyDark: '#991b1b',
   jerseyLight: '#f87171',
+  jerseyShadow: '#7f1d1d',
   number: '#fef08a',
   shorts: '#1e293b',
   shortsDark: '#0f172a',
+  shortsLight: '#334155',
   socks: '#dc2626',
+  socksDark: '#991b1b',
   boots: '#38bdf8',
+  bootsDark: '#0284c7',
+  bootsLight: '#bae6fd',
   glove: '#f97316',
   gloveLight: '#fdba74',
+  gloveDark: '#c2410c',
 };
 
 const BLUE_TEAM_KEEPER: SpritePalette = {
@@ -62,10 +95,13 @@ const BLUE_TEAM_KEEPER: SpritePalette = {
   jersey: '#059669',
   jerseyDark: '#065f46',
   jerseyLight: '#34d399',
+  jerseyShadow: '#064e3b',
   shorts: '#0f172a',
   shortsDark: '#020617',
+  shortsLight: '#1e293b',
   glove: '#38bdf8',
   gloveLight: '#bae6fd',
+  gloveDark: '#0369a1',
 };
 
 const RED_TEAM_KEEPER: SpritePalette = {
@@ -73,10 +109,13 @@ const RED_TEAM_KEEPER: SpritePalette = {
   jersey: '#ea580c',
   jerseyDark: '#9a3412',
   jerseyLight: '#fb923c',
+  jerseyShadow: '#7c2d12',
   shorts: '#1e1b4b',
   shortsDark: '#0f172a',
+  shortsLight: '#312e81',
   glove: '#facc15',
   gloveLight: '#fef08a',
+  gloveDark: '#a16207',
 };
 
 function createPixelCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
@@ -88,9 +127,37 @@ function createPixelCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRend
   return [c, ctx];
 }
 
+// High-detail pixel drawing helpers
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string): void {
   ctx.fillStyle = color;
   ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+}
+
+// Organic rounded pixel box with corners clipped for human-like anatomy
+function pxClipped(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  fill: string,
+  outline?: string
+): void {
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  const rw = Math.round(w);
+  const rh = Math.round(h);
+
+  if (outline) {
+    ctx.fillStyle = outline;
+    // Cross outline (omitting extreme 1px corners)
+    ctx.fillRect(rx + 1, ry - 1, rw - 2, rh + 2);
+    ctx.fillRect(rx - 1, ry + 1, rw + 2, rh - 2);
+  }
+
+  ctx.fillStyle = fill;
+  ctx.fillRect(rx + 1, ry, rw - 2, rh);
+  ctx.fillRect(rx, ry + 1, rw, rh - 2);
 }
 
 function pxOutlined(
@@ -102,9 +169,15 @@ function pxOutlined(
   fill: string,
   outline: string
 ): void {
-  px(ctx, x - 1, y, w + 2, h, outline);
-  px(ctx, x, y - 1, w, h + 2, outline);
-  px(ctx, x, y, w, h, fill);
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  const rw = Math.round(w);
+  const rh = Math.round(h);
+  ctx.fillStyle = outline;
+  ctx.fillRect(rx - 1, ry, rw + 2, rh);
+  ctx.fillRect(rx, ry - 1, rw, rh + 2);
+  ctx.fillStyle = fill;
+  ctx.fillRect(rx, ry, rw, rh);
 }
 
 export type KickerAnimKey = 'idle' | 'charge' | 'runup' | 'kick' | 'celebrate' | 'despair' | 'taunt';
@@ -118,6 +191,14 @@ export type KeeperAnimKey =
   | 'celebrate'
   | 'despair'
   | 'taunt';
+
+function txLeft(cx: number): number {
+  return cx - 11;
+}
+
+function txRight(cx: number): number {
+  return cx + 4;
+}
 
 export class PixelSpriteBank {
   public kickerBlue: Record<KickerAnimKey, HTMLCanvasElement[]>;
@@ -228,169 +309,247 @@ export class PixelSpriteBank {
     const tx = cx + torsoTiltX;
     const ty = 24 + bobY;
 
-    // ---------------- LEGS (drawn behind shorts) ----------------
+    // ---------------- LEGS & ANATOMY (MUSCULAR CURVED CALVES & KNEE CONTOURS) ----------------
     if (kneeling) {
-      // Kneeling legs on turf
-      pxOutlined(ctx, tx - 11, 56, 8, 12, pal.socks, pal.outline);
-      pxOutlined(ctx, tx + 3, 56, 8, 12, pal.socks, pal.outline);
-      pxOutlined(ctx, tx - 13, 66, 9, 5, pal.boots, pal.outline);
-      pxOutlined(ctx, tx + 4, 66, 9, 5, pal.boots, pal.outline);
+      // Slumped despair kneeling: realistic curved shins, boots flattened on grass
+      pxClipped(ctx, tx - 12, 53, 9, 13, pal.socks, pal.outline);
+      px(ctx, tx - 11, 54, 7, 3, pal.socksDark);
+      pxClipped(ctx, tx + 3, 53, 9, 13, pal.socks, pal.outline);
+      px(ctx, tx + 4, 54, 7, 3, pal.socksDark);
+      // Boots
+      pxClipped(ctx, tx - 14, 65, 11, 6, pal.boots, pal.outline);
+      px(ctx, tx - 13, 66, 3, 4, pal.bootsDark);
+      pxClipped(ctx, tx + 3, 65, 11, 6, pal.boots, pal.outline);
+      px(ctx, tx + 4, 66, 3, 4, pal.bootsDark);
     } else if (rightKickStage >= 0) {
-      // Planted left leg
-      pxOutlined(ctx, tx - 11, 51 + bobY, 7, 9, pal.skinDark, pal.outline);
-      pxOutlined(ctx, tx - 11, 58 + bobY, 7, 10, pal.socks, pal.outline);
-      px(ctx, tx - 11, 59 + bobY, 7, 2, pal.jerseyLight);
-      pxOutlined(ctx, tx - 12, 67 + bobY, 9, 5, pal.boots, pal.outline);
+      // Planted left leg with natural quad & gastrocnemius calf taper
+      // Thigh connection
+      pxClipped(ctx, tx - 12, 48 + bobY, 8, 8, pal.skinDark, pal.outline);
+      px(ctx, tx - 11, 49 + bobY, 4, 6, pal.skin);
+      // Knee crease
+      px(ctx, tx - 12, 54 + bobY, 8, 2, pal.skinShadow);
+      // Bulbous calf tapering to ankle
+      pxClipped(ctx, tx - 13, 56 + bobY, 9, 6, pal.socks, pal.outline); // upper calf bulge
+      px(ctx, tx - 12, 56 + bobY, 2, 6, pal.jerseyLight); // sock stripe
+      pxClipped(ctx, tx - 11, 62 + bobY, 7, 6, pal.socksDark, pal.outline); // slim ankle
+      // Cleat / Football Boot with heel counter & studs
+      pxClipped(ctx, tx - 14, 67 + bobY, 11, 5, pal.boots, pal.outline);
+      px(ctx, tx - 13, 68 + bobY, 9, 2, pal.bootsLight);
+      px(ctx, tx - 14, 70 + bobY, 3, 2, pal.bootsDark); // heel cup
       // Studs
-      px(ctx, tx - 11, 72 + bobY, 2, 2, '#f8fafc');
-      px(ctx, tx - 6, 72 + bobY, 2, 2, '#f8fafc');
+      px(ctx, tx - 13, 72 + bobY, 2, 2, '#f8fafc');
+      px(ctx, tx - 7, 72 + bobY, 2, 2, '#f8fafc');
 
-      // Dynamic kicking right leg
+      // Dynamic kicking right leg with genuine athletic angles
       if (rightKickStage === 0) {
-        // Cocked back toward camera (foreshortened big boot!)
-        pxOutlined(ctx, tx + 4, 48, 9, 10, pal.skin, pal.outline);
-        pxOutlined(ctx, tx + 5, 52, 10, 11, pal.socks, pal.outline);
-        pxOutlined(ctx, tx + 4, 57, 12, 9, pal.boots, pal.outline);
-        // Sole studs facing camera
-        px(ctx, tx + 6, 59, 2, 2, '#0f172a');
-        px(ctx, tx + 12, 59, 2, 2, '#0f172a');
-        px(ctx, tx + 6, 63, 2, 2, '#0f172a');
-        px(ctx, tx + 12, 63, 2, 2, '#0f172a');
+        // Cocked back toward camera (foreshortened 3D boot & calf)
+        pxClipped(ctx, tx + 4, 46, 10, 8, pal.skin, pal.outline);
+        px(ctx, tx + 5, 47, 8, 3, pal.skinDark);
+        pxClipped(ctx, tx + 5, 51, 11, 9, pal.socks, pal.outline);
+        px(ctx, tx + 7, 52, 4, 7, pal.socksDark);
+        // Large 3D boot sole facing camera
+        pxClipped(ctx, tx + 4, 57, 13, 10, pal.boots, pal.outline);
+        px(ctx, tx + 5, 58, 11, 8, pal.bootsDark);
+        // Yellow/white studs pattern
+        px(ctx, tx + 6, 59, 3, 2, '#facc15');
+        px(ctx, tx + 12, 59, 3, 2, '#facc15');
+        px(ctx, tx + 6, 64, 3, 2, '#ffffff');
+        px(ctx, tx + 12, 64, 3, 2, '#ffffff');
       } else if (rightKickStage === 1) {
-        // Mid-swing blur arc
-        px(ctx, tx + 8, 49, 14, 12, 'rgba(255,255,255,0.45)');
-        pxOutlined(ctx, tx + 5, 48, 10, 8, pal.skin, pal.outline);
-        pxOutlined(ctx, tx + 10, 45, 9, 8, pal.socks, pal.outline);
-        pxOutlined(ctx, tx + 16, 42, 10, 6, pal.boots, pal.outline);
+        // Mid-swing explosive blur arc
+        px(ctx, tx + 7, 47, 16, 14, 'rgba(255,255,255,0.4)');
+        pxClipped(ctx, tx + 5, 46, 11, 8, pal.skin, pal.outline);
+        pxClipped(ctx, tx + 10, 43, 10, 8, pal.socks, pal.outline);
+        pxClipped(ctx, tx + 16, 39, 12, 7, pal.boots, pal.outline);
+        px(ctx, tx + 18, 40, 8, 3, pal.bootsLight);
       } else if (rightKickStage === 2) {
-        // Impact forward into ball
-        pxOutlined(ctx, tx + 3, 46, 8, 10, pal.skin, pal.outline);
-        pxOutlined(ctx, tx + 4, 41, 8, 8, pal.socks, pal.outline);
-        pxOutlined(ctx, tx + 5, 36, 9, 6, pal.boots, pal.outline);
+        // Impact forward into ball: stretched instep & toe strike
+        pxClipped(ctx, tx + 3, 44, 9, 9, pal.skin, pal.outline);
+        pxClipped(ctx, tx + 5, 39, 9, 8, pal.socks, pal.outline);
+        px(ctx, tx + 6, 40, 2, 6, pal.socksDark);
+        pxClipped(ctx, tx + 7, 34, 11, 6, pal.boots, pal.outline);
+        px(ctx, tx + 8, 35, 7, 3, pal.bootsLight);
       } else {
-        // High follow-through leg extended forward-up
-        pxOutlined(ctx, tx + 4, 42, 8, 9, pal.skin, pal.outline);
-        pxOutlined(ctx, tx + 7, 35, 8, 9, pal.socks, pal.outline);
-        pxOutlined(ctx, tx + 9, 29, 10, 6, pal.boots, pal.outline);
+        // High follow-through leg extended gracefully
+        pxClipped(ctx, tx + 4, 40, 9, 9, pal.skin, pal.outline);
+        pxClipped(ctx, tx + 7, 33, 9, 9, pal.socks, pal.outline);
+        pxClipped(ctx, tx + 10, 27, 11, 6, pal.boots, pal.outline);
       }
     } else {
-      // Standard two legs (idle / charge / runup / celebrate)
-      const ly = 51 + bobY + leftLegY;
-      const ry = 51 + bobY + rightLegY;
+      // Standard two legs (muscular calves bulging outward, slim ankles)
+      const ly = 50 + bobY + leftLegY;
+      const ry = 50 + bobY + rightLegY;
 
-      // Left calf & sock & boot
-      pxOutlined(ctx, tx - 10, ly, 7, 7, pal.skin, pal.outline);
-      px(ctx, tx - 10, ly, 2, 7, pal.skinDark);
-      pxOutlined(ctx, tx - 10, ly + 6, 7, 10, pal.socks, pal.outline);
-      px(ctx, tx - 10, ly + 7, 7, 2, pal.number);
-      pxOutlined(ctx, tx - 11, ly + 15, 8, 5, pal.boots, pal.outline);
+      // Left leg: thigh -> knee -> sculpted calf -> ankle -> boot
+      px(ctx, tx - 11, ly, 7, 5, pal.skinDark); // thigh under shorts
+      px(ctx, tx - 10, ly + 1, 5, 4, pal.skin);
+      px(ctx, tx - 11, ly + 5, 7, 2, pal.skinShadow); // knee crease
+      // Sock upper band with accent stripe
+      pxClipped(ctx, tx - 12, ly + 6, 8, 4, pal.socks, pal.outline);
+      px(ctx, tx - 12, ly + 7, 8, 1, pal.jerseyLight);
+      // Calf muscle bulge (left side curve)
+      pxClipped(ctx, tx - 13, ly + 9, 9, 6, pal.socks, pal.outline);
+      px(ctx, tx - 12, ly + 10, 3, 4, pal.socksDark);
+      // Slim ankle
+      pxClipped(ctx, tx - 11, ly + 14, 7, 4, pal.socksDark, pal.outline);
+      // Boot with curved toe & cleat
+      pxClipped(ctx, tx - 13, ly + 17, 10, 5, pal.boots, pal.outline);
+      px(ctx, tx - 12, ly + 18, 8, 2, pal.bootsLight);
+      px(ctx, tx - 13, ly + 20, 3, 2, pal.bootsDark); // heel counter
 
-      // Right calf & sock & boot
-      pxOutlined(ctx, tx + 3, ry, 7, 7, pal.skin, pal.outline);
-      px(ctx, tx + 8, ry, 2, 7, pal.skinDark);
-      pxOutlined(ctx, tx + 3, ry + 6, 7, 10, pal.socks, pal.outline);
-      px(ctx, tx + 3, ry + 7, 7, 2, pal.number);
-      pxOutlined(ctx, tx + 3, ry + 15, 8, 5, pal.boots, pal.outline);
+      // Right leg: mirror sculpted anatomy
+      px(ctx, tx + 4, ry, 7, 5, pal.skinDark);
+      px(ctx, tx + 5, ry + 1, 5, 4, pal.skin);
+      px(ctx, tx + 4, ry + 5, 7, 2, pal.skinShadow);
+      pxClipped(ctx, tx + 4, ry + 6, 8, 4, pal.socks, pal.outline);
+      px(ctx, tx + 4, ry + 7, 8, 1, pal.jerseyLight);
+      pxClipped(ctx, tx + 4, ry + 9, 9, 6, pal.socks, pal.outline);
+      px(ctx, tx + 9, ry + 10, 3, 4, pal.socksDark);
+      pxClipped(ctx, tx + 4, ry + 14, 7, 4, pal.socksDark, pal.outline);
+      pxClipped(ctx, tx + 3, ry + 17, 10, 5, pal.boots, pal.outline);
+      px(ctx, tx + 4, ry + 18, 8, 2, pal.bootsLight);
+      px(ctx, tx + 9, ry + 20, 3, 2, pal.bootsDark);
     }
 
-    // ---------------- SHORTS ----------------
-    const shortsY = ty + 20;
-    pxOutlined(ctx, tx - 12, shortsY, 24, 9, pal.shorts, pal.outline);
-    px(ctx, tx - 12, shortsY + 6, 24, 3, pal.shortsDark);
-    px(ctx, tx - 1, shortsY + 4, 2, 5, pal.outline); // leg split
+    // ---------------- SHORTS (ATHLETIC FIT WITH SIDE STRIPES & FOLDS) ----------------
+    const shortsY = ty + 19;
+    // Waistband
+    px(ctx, tx - 12, shortsY - 1, 24, 2, pal.shortsDark);
+    // Main shorts with natural taper and flare at hem
+    pxClipped(ctx, tx - 13, shortsY, 26, 11, pal.shorts, pal.outline);
+    // Left leg hem & right leg hem contour
+    px(ctx, tx - 13, shortsY + 8, 26, 3, pal.shortsDark);
+    // Center fold / groin shadow
+    px(ctx, tx - 1, shortsY + 3, 2, 8, pal.outlineSoft);
+    // Athletic side piping stripes
+    px(ctx, tx - 12, shortsY + 1, 2, 9, pal.jersey);
+    px(ctx, tx + 10, shortsY + 1, 2, 9, pal.jersey);
 
-    // ---------------- ARMS ----------------
+    // ---------------- ARMS (DELTOID, BICEP, FOREARM, HAND CONTOUR) ----------------
     // Left arm
     if (kneeling) {
-      pxOutlined(ctx, tx - 15, ty + 2, 5, 11, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx - 13, ty - 4, 5, 8, pal.skin, pal.outline);
+      pxClipped(ctx, tx - 16, ty + 2, 6, 12, pal.jersey, pal.outline);
+      pxClipped(ctx, tx - 14, ty - 4, 6, 8, pal.skin, pal.outline);
     } else if (leftArmMode === 'down') {
-      pxOutlined(ctx, tx - 17, ty + 3, 5, 8, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx - 17, ty + 11, 5, 9, pal.skin, pal.outline);
+      // Shoulder cap (deltoid sleeve)
+      pxClipped(ctx, tx - 18, ty + 2, 7, 7, pal.jersey, pal.outline);
+      px(ctx, tx - 17, ty + 3, 3, 4, pal.jerseyLight);
+      // Bicep/Elbow
+      pxClipped(ctx, tx - 17, ty + 8, 5, 6, pal.skin, pal.outline);
+      // Forearm taper to clenched fist
+      pxClipped(ctx, tx - 18, ty + 13, 6, 7, pal.skinDark, pal.outline);
+      px(ctx, tx - 17, ty + 14, 4, 3, pal.skin);
     } else if (leftArmMode === 'wide') {
-      pxOutlined(ctx, tx - 21, ty + 2, 9, 6, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx - 27, ty + 4, 7, 5, pal.skin, pal.outline);
+      pxClipped(ctx, tx - 22, ty + 1, 10, 6, pal.jersey, pal.outline);
+      px(ctx, tx - 20, ty + 2, 6, 2, pal.jerseyLight);
+      pxClipped(ctx, tx - 29, ty + 3, 8, 5, pal.skin, pal.outline);
+      px(ctx, tx - 28, ty + 4, 6, 2, pal.skinLight);
     } else if (leftArmMode === 'up') {
-      pxOutlined(ctx, tx - 18, ty - 2, 6, 8, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx - 20, ty - 11, 5, 10, pal.skin, pal.outline);
+      pxClipped(ctx, tx - 18, ty - 3, 7, 8, pal.jersey, pal.outline);
+      pxClipped(ctx, tx - 20, ty - 12, 6, 10, pal.skin, pal.outline);
+      px(ctx, tx - 19, ty - 11, 3, 6, pal.skinLight);
     } else if (leftArmMode === 'forward') {
-      pxOutlined(ctx, tx - 17, ty + 1, 5, 9, pal.jerseyDark, pal.outline);
-      pxOutlined(ctx, tx - 16, ty - 4, 4, 6, pal.skinDark, pal.outline);
+      pxClipped(ctx, tx - 18, ty + 1, 6, 9, pal.jerseyDark, pal.outline);
+      pxClipped(ctx, tx - 17, ty - 4, 5, 7, pal.skinDark, pal.outline);
     } else if (leftArmMode === 'back') {
-      pxOutlined(ctx, tx - 19, ty + 4, 7, 7, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx - 22, ty + 10, 6, 8, pal.skin, pal.outline);
+      pxClipped(ctx, tx - 20, ty + 3, 8, 7, pal.jersey, pal.outline);
+      pxClipped(ctx, tx - 23, ty + 9, 7, 9, pal.skin, pal.outline);
     }
 
     // Right arm
     if (kneeling) {
-      pxOutlined(ctx, tx + 10, ty + 2, 5, 11, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx + 8, ty - 4, 5, 8, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 10, ty + 2, 6, 12, pal.jersey, pal.outline);
+      pxClipped(ctx, tx + 8, ty - 4, 6, 8, pal.skin, pal.outline);
     } else if (rightArmMode === 'down') {
-      pxOutlined(ctx, tx + 12, ty + 3, 5, 8, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx + 12, ty + 11, 5, 9, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 11, ty + 2, 7, 7, pal.jersey, pal.outline);
+      px(ctx, tx + 13, ty + 3, 3, 4, pal.jerseyLight);
+      pxClipped(ctx, tx + 12, ty + 8, 5, 6, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 12, ty + 13, 6, 7, pal.skinDark, pal.outline);
+      px(ctx, tx + 13, ty + 14, 4, 3, pal.skin);
     } else if (rightArmMode === 'wide') {
-      pxOutlined(ctx, tx + 12, ty + 2, 9, 6, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx + 20, ty + 4, 7, 5, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 12, ty + 1, 10, 6, pal.jersey, pal.outline);
+      px(ctx, tx + 14, ty + 2, 6, 2, pal.jerseyLight);
+      pxClipped(ctx, tx + 21, ty + 3, 8, 5, pal.skin, pal.outline);
+      px(ctx, tx + 22, ty + 4, 6, 2, pal.skinLight);
     } else if (rightArmMode === 'up') {
-      pxOutlined(ctx, tx + 12, ty - 2, 6, 8, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx + 15, ty - 11, 5, 10, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 11, ty - 3, 7, 8, pal.jersey, pal.outline);
+      pxClipped(ctx, tx + 14, ty - 12, 6, 10, pal.skin, pal.outline);
+      px(ctx, tx + 15, ty - 11, 3, 6, pal.skinLight);
     } else if (rightArmMode === 'back') {
-      pxOutlined(ctx, tx + 12, ty + 4, 7, 7, pal.jersey, pal.outline);
-      pxOutlined(ctx, tx + 16, ty + 10, 6, 8, pal.skin, pal.outline);
+      pxClipped(ctx, tx + 12, ty + 3, 8, 7, pal.jersey, pal.outline);
+      pxClipped(ctx, tx + 16, ty + 9, 7, 9, pal.skin, pal.outline);
     }
 
-    // ---------------- TORSO / JERSEY BACK ----------------
-    pxOutlined(ctx, tx - 13, ty + 1, 26, 20, pal.jersey, pal.outline);
-    // Side shading & shoulder trim
-    px(ctx, tx - 13, ty + 1, 4, 20, pal.jerseyDark);
-    px(ctx, tx + 10, ty + 1, 3, 20, pal.jerseyDark);
-    px(ctx, tx - 13, ty + 1, 26, 3, pal.jerseyLight);
-    // Collar
-    px(ctx, tx - 6, ty, 12, 2, pal.number);
+    // ---------------- TORSO (V-TAPER ATHLETIC BACK WITH SHOULDER BLADES & WRINKLES) ----------------
+    // Broad athletic shoulders tapering down to slim athletic waist (V-Shape)
+    pxClipped(ctx, tx - 14, ty, 28, 7, pal.jersey, pal.outline); // Upper back / Trapezius
+    px(ctx, tx - 12, ty + 1, 24, 2, pal.jerseyLight); // Collar bone / shoulder highlight
+    pxClipped(ctx, tx - 13, ty + 6, 26, 7, pal.jersey, pal.outline); // Mid-back (latissimus dorsi)
+    pxClipped(ctx, tx - 12, ty + 12, 24, 8, pal.jersey, pal.outline); // Lower back / waist
+    // Lateral shadows giving 3D cylindrical torso curvature
+    px(ctx, tx - 14, ty + 1, 3, 19, pal.jerseyShadow);
+    px(ctx, tx + 11, ty + 1, 3, 19, pal.jerseyShadow);
+    // Shoulder blade contour lines (scapula depth)
+    px(ctx, tx - 8, ty + 4, 3, 4, pal.jerseyDark);
+    px(ctx, tx + 5, ty + 4, 3, 4, pal.jerseyDark);
+    // Ergonomic crew neck collar
+    pxClipped(ctx, tx - 6, ty - 1, 12, 3, pal.number, pal.outline);
 
-    // Pixel Back Number "10"
+    // Stylish athletic Back Number "10" with beveled shadow
     const nx = tx - 6;
     const ny = ty + 6;
-    // "1"
+    // Shadow
+    px(ctx, nx + 2, ny + 1, 3, 10, pal.jerseyShadow);
+    px(ctx, nx + 7, ny + 1, 6, 10, pal.jerseyShadow);
+    // Number "1"
     px(ctx, nx + 1, ny, 3, 10, pal.number);
     px(ctx, nx, ny + 1, 1, 2, pal.number);
-    // "0"
+    // Number "0"
     px(ctx, nx + 6, ny, 6, 10, pal.number);
     px(ctx, nx + 8, ny + 2, 2, 6, pal.jersey);
 
-    // ---------------- HEAD & SPIKY ANIME HAIR (BACK VIEW) ----------------
-    const hy = ty - 15 + (kneeling ? 3 : 0);
-    // Neck
-    px(ctx, tx - 4, ty - 2, 8, 3, pal.skinDark);
+    // ---------------- HEAD & DYNAMIC LAYERED HAIR (BACK VIEW) ----------------
+    const hy = ty - 16 + (kneeling ? 3 : 0);
+    // Muscular neck (trapezius & spinal groove)
+    pxClipped(ctx, tx - 5, ty - 3, 10, 4, pal.skinDark, pal.outline);
+    px(ctx, tx - 1, ty - 2, 2, 3, pal.skinShadow);
 
-    // Ears
-    pxOutlined(ctx, tx - 10, hy + 7, 2, 4, pal.skin, pal.outline);
-    pxOutlined(ctx, tx + 8, hy + 7, 2, 4, pal.skin, pal.outline);
+    // Ears with lobe definition
+    pxClipped(ctx, tx - 11, hy + 6, 3, 5, pal.skin, pal.outline);
+    px(ctx, tx - 10, hy + 7, 1, 3, pal.skinDark);
+    pxClipped(ctx, tx + 8, hy + 6, 3, 5, pal.skin, pal.outline);
+    px(ctx, tx + 9, hy + 7, 1, 3, pal.skinDark);
 
-    // Back of hair base
-    pxOutlined(ctx, tx - 9, hy + 1, 18, 13, pal.hair, pal.outline);
-    // Anime spikes!
-    pxOutlined(ctx, tx - 12, hy + 3, 4, 4, pal.hair, pal.outline);
-    pxOutlined(ctx, tx + 8, hy + 3, 4, 4, pal.hair, pal.outline);
-    pxOutlined(ctx, tx - 7, hy - 2, 6, 4, pal.hair, pal.outline);
-    pxOutlined(ctx, tx + 1, hy - 3, 6, 5, pal.hair, pal.outline);
-    // Hair highlight pixels
-    px(ctx, tx - 5, hy + 2, 4, 2, pal.hairLight);
-    px(ctx, tx + 2, hy + 1, 4, 2, pal.hairLight);
+    // Layered Anime Hair (deep shaded base + midtone lock + highlight spikes)
+    // Dark silhouette base
+    pxClipped(ctx, tx - 10, hy, 20, 14, pal.hairDark, pal.outline);
+    // Main hair volume
+    pxClipped(ctx, tx - 9, hy + 1, 18, 12, pal.hair);
+    // Dynamic windswept hair spikes (top & sides)
+    pxClipped(ctx, tx - 13, hy + 2, 5, 5, pal.hair, pal.outline);
+    pxClipped(ctx, tx + 8, hy + 2, 5, 5, pal.hair, pal.outline);
+    pxClipped(ctx, tx - 8, hy - 3, 7, 5, pal.hair, pal.outline);
+    pxClipped(ctx, tx + 1, hy - 4, 7, 6, pal.hair, pal.outline);
+    // Glossy hair highlights (sheen)
+    px(ctx, tx - 6, hy + 1, 5, 2, pal.hairLight);
+    px(ctx, tx + 2, hy, 5, 2, pal.hairLight);
+    px(ctx, tx - 11, hy + 3, 2, 3, pal.hairLight);
 
-    // Flowing Hero Headband + Tails!
-    px(ctx, tx - 9, hy + 7, 18, 3, pal.band);
+    // Hero Headband with folds & fluttering tails
+    px(ctx, tx - 10, hy + 6, 20, 3, pal.band);
+    px(ctx, tx - 10, hy + 6, 20, 1, pal.bandLight); // top highlight
     const wave = frame % 2 === 0 ? 0 : 2;
-    // Knot & flowing tails
-    pxOutlined(ctx, tx + 2, hy + 8, 4, 4, pal.band, pal.outline);
-    pxOutlined(ctx, tx + 6, hy + 9 + wave, 8, 3, pal.band, pal.outline);
-    pxOutlined(ctx, tx + 4, hy + 12 - wave, 7, 2, pal.band, pal.outline);
+    // Knot & dual fluttering ribbons
+    pxClipped(ctx, tx + 2, hy + 7, 5, 5, pal.band, pal.outline);
+    pxClipped(ctx, tx + 6, hy + 8 + wave, 9, 3, pal.band, pal.outline);
+    px(ctx, tx + 7, hy + 8 + wave, 7, 1, pal.bandLight);
+    pxClipped(ctx, tx + 4, hy + 11 - wave, 8, 3, pal.band, pal.outline);
 
     return canvas;
   }
 
   // =========================================================================
-  // GOALKEEPER SPRITES (64x64, FRONT-VIEW PIXEL ART)
+  // GOALKEEPER SPRITES (64x64, HIGH-DETAIL FRONT-VIEW PIXEL ART)
   // =========================================================================
   private buildKeeperSprites(pal: SpritePalette): Record<KeeperAnimKey, HTMLCanvasElement[]> {
     return {
@@ -407,31 +566,61 @@ export class PixelSpriteBank {
   }
 
   private drawKeeperHeadFront(ctx: CanvasRenderingContext2D, pal: SpritePalette, cx: number, hy: number, shout = false): void {
-    // Hair back spikes
-    pxOutlined(ctx, cx - 7, hy - 2, 14, 6, pal.hair, pal.outline);
-    pxOutlined(ctx, cx - 9, hy + 1, 3, 4, pal.hair, pal.outline);
-    pxOutlined(ctx, cx + 6, hy + 1, 3, 4, pal.hair, pal.outline);
-    // Face
-    pxOutlined(ctx, cx - 6, hy + 2, 12, 10, pal.skin, pal.outline);
-    px(ctx, cx - 6, hy + 9, 12, 3, pal.skinDark);
-    // Headband
-    px(ctx, cx - 6, hy + 2, 12, 2, pal.band);
-    // Fierce eyes
-    px(ctx, cx - 4, hy + 5, 3, 2, '#0f172a');
-    px(ctx, cx + 1, hy + 5, 3, 2, '#0f172a');
-    px(ctx, cx - 4, hy + 5, 1, 1, '#ffffff');
-    px(ctx, cx + 1, hy + 5, 1, 1, '#ffffff');
+    // Hair volume back/silhouette
+    pxClipped(ctx, cx - 8, hy - 4, 16, 8, pal.hairDark, pal.outline);
+    // Spiky windswept hair strands
+    pxClipped(ctx, cx - 10, hy - 1, 4, 5, pal.hair, pal.outline);
+    pxClipped(ctx, cx + 6, hy - 1, 4, 5, pal.hair, pal.outline);
+    pxClipped(ctx, cx - 6, hy - 5, 5, 4, pal.hairLight, pal.outline);
+    pxClipped(ctx, cx + 1, hy - 5, 5, 4, pal.hairLight, pal.outline);
+
+    // Sculpted human face with defined jawline & chin taper
+    pxClipped(ctx, cx - 7, hy + 1, 14, 11, pal.skin, pal.outline);
+    px(ctx, cx - 6, hy + 2, 12, 1, pal.skinLight); // forehead highlight
+    px(ctx, cx - 6, hy + 9, 12, 3, pal.skinDark); // jaw shadow
+    px(ctx, cx - 2, hy + 10, 4, 2, pal.skinShadow); // chin definition
+
+    // Hero Headband with 3D depth
+    px(ctx, cx - 7, hy + 1, 14, 2, pal.band);
+    px(ctx, cx - 7, hy + 1, 14, 1, pal.bandLight);
+
+    // Sharp anime eyebrows & focused eyes
+    px(ctx, cx - 5, hy + 4, 4, 1, pal.hairDark); // left eyebrow
+    px(ctx, cx + 1, hy + 4, 4, 1, pal.hairDark); // right eyebrow
+    // Eyes (white sclera + pupil + glint)
+    px(ctx, cx - 5, hy + 5, 4, 2, '#ffffff');
+    px(ctx, cx + 1, hy + 5, 4, 2, '#ffffff');
+    px(ctx, cx - 4, hy + 5, 2, 2, '#0f172a'); // left pupil
+    px(ctx, cx + 2, hy + 5, 2, 2, '#0f172a'); // right pupil
+    px(ctx, cx - 4, hy + 5, 1, 1, '#60a5fa'); // eye reflection
+    px(ctx, cx + 2, hy + 5, 1, 1, '#60a5fa');
+
+    // Nose shadow
+    px(ctx, cx - 1, hy + 7, 2, 2, pal.skinDark);
+
     // Mouth
     if (shout) {
-      px(ctx, cx - 2, hy + 8, 4, 3, '#7f1d1d');
+      // Roaring open mouth
+      pxClipped(ctx, cx - 3, hy + 9, 6, 4, '#7f1d1d', pal.outlineSoft);
+      px(ctx, cx - 2, hy + 9, 4, 1, '#ffffff'); // teeth
     } else {
-      px(ctx, cx - 2, hy + 9, 4, 1, '#7c2d12');
+      // Determined grin
+      px(ctx, cx - 3, hy + 9, 6, 1, pal.skinShadow);
+      px(ctx, cx - 1, hy + 10, 2, 1, pal.skinDark);
     }
   }
 
-  private drawGlove(ctx: CanvasRenderingContext2D, pal: SpritePalette, x: number, y: number): void {
-    pxOutlined(ctx, x - 4, y - 4, 8, 8, pal.glove, pal.outline);
-    px(ctx, x - 3, y - 3, 5, 4, pal.gloveLight);
+  private drawGlove(ctx: CanvasRenderingContext2D, pal: SpritePalette, x: number, y: number, open = true): void {
+    // Professional goalkeeper latex gloves with palm grip & padded finger spines
+    pxClipped(ctx, x - 5, y - 5, 10, 10, pal.glove, pal.outline);
+    px(ctx, x - 4, y - 4, 8, 4, pal.gloveLight); // finger spines / punch zone
+    px(ctx, x - 4, y, 8, 4, pal.gloveDark); // latex palm
+    px(ctx, x - 2, y + 4, 4, 2, '#ffffff'); // wrist velcro strap
+    if (open) {
+      // Finger separations
+      px(ctx, x - 2, y - 5, 1, 3, pal.outlineSoft);
+      px(ctx, x + 1, y - 5, 1, 3, pal.outlineSoft);
+    }
   }
 
   private drawKeeperIdle(pal: SpritePalette, frame: number): HTMLCanvasElement {
@@ -439,77 +628,108 @@ export class PixelSpriteBank {
     const shiftX = frame === 1 ? -2 : frame === 3 ? 2 : 0;
     const bobY = frame % 2 === 0 ? 0 : 2;
     const cx = 32 + shiftX;
-    const ty = 24 + bobY;
+    const ty = 23 + bobY;
 
-    // Shadow
-    px(ctx, cx - 14, 57, 28, 4, 'rgba(0,0,0,0.35)');
+    // Realistic ground shadow
+    px(ctx, cx - 16, 57, 32, 4, 'rgba(0,0,0,0.38)');
+    px(ctx, cx - 12, 56, 24, 6, 'rgba(0,0,0,0.22)');
 
-    // Wide goalkeeper ready stance legs
-    pxOutlined(ctx, cx - 11, ty + 19, 6, 11, pal.socks, pal.outline);
-    pxOutlined(ctx, cx + 5, ty + 19, 6, 11, pal.socks, pal.outline);
-    // Knee pads
-    px(ctx, cx - 11, ty + 20, 6, 3, '#1e293b');
-    px(ctx, cx + 5, ty + 20, 6, 3, '#1e293b');
-    // Boots
-    pxOutlined(ctx, cx - 13, ty + 29, 7, 4, pal.boots, pal.outline);
-    pxOutlined(ctx, cx + 6, ty + 29, 7, 4, pal.boots, pal.outline);
+    // Wide goalkeeper ready stance with athletic quadriceps & calves
+    // Left leg
+    pxClipped(ctx, txLeft(cx), ty + 18, 7, 6, pal.skinDark, pal.outline); // knee connection
+    pxClipped(ctx, txLeft(cx) - 1, ty + 21, 8, 8, pal.socks, pal.outline); // sculpted calf
+    px(ctx, txLeft(cx), ty + 22, 6, 2, pal.jerseyLight); // sock stripe
+    pxClipped(ctx, txLeft(cx), ty + 28, 6, 3, pal.socksDark, pal.outline); // ankle
+    pxClipped(ctx, txLeft(cx) - 2, ty + 30, 9, 4, pal.boots, pal.outline); // cleat
+    px(ctx, txLeft(cx) - 1, ty + 31, 7, 2, pal.bootsLight);
 
-    // Shorts
-    pxOutlined(ctx, cx - 10, ty + 13, 20, 7, pal.shorts, pal.outline);
+    // Right leg
+    pxClipped(ctx, txRight(cx), ty + 18, 7, 6, pal.skinDark, pal.outline);
+    pxClipped(ctx, txRight(cx), ty + 21, 8, 8, pal.socks, pal.outline);
+    px(ctx, txRight(cx) + 1, ty + 22, 6, 2, pal.jerseyLight);
+    pxClipped(ctx, txRight(cx) + 1, ty + 28, 6, 3, pal.socksDark, pal.outline);
+    pxClipped(ctx, txRight(cx), ty + 30, 9, 4, pal.boots, pal.outline);
+    px(ctx, txRight(cx) + 1, ty + 31, 7, 2, pal.bootsLight);
 
-    // Torso
-    pxOutlined(ctx, cx - 9, ty, 18, 14, pal.jersey, pal.outline);
-    px(ctx, cx - 9, ty, 18, 3, pal.jerseyLight);
-    px(ctx, cx - 4, ty + 4, 8, 6, pal.jerseyDark); // chest grip pad
+    // Knee protector pads
+    px(ctx, txLeft(cx) - 1, ty + 20, 8, 3, '#1e293b');
+    px(ctx, txRight(cx), ty + 20, 8, 3, '#1e293b');
 
-    // Outstretched ready arms + big gloves
-    pxOutlined(ctx, cx - 17, ty + 2, 8, 5, pal.jersey, pal.outline);
-    pxOutlined(ctx, cx + 9, ty + 2, 8, 5, pal.jersey, pal.outline);
-    this.drawGlove(ctx, pal, cx - 19, ty + 5 - (frame % 2));
-    this.drawGlove(ctx, pal, cx + 19, ty + 5 - (frame % 2));
+    // Goalkeeper Shorts with side vents
+    pxClipped(ctx, cx - 11, ty + 12, 22, 8, pal.shorts, pal.outline);
+    px(ctx, cx - 10, ty + 17, 20, 3, pal.shortsDark);
+    px(ctx, cx - 1, ty + 14, 2, 6, pal.outlineSoft); // groin split
 
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 12);
+    // Muscular Goalkeeper Torso (chest grip pad, padded ribs, collar)
+    pxClipped(ctx, cx - 11, ty - 1, 22, 15, pal.jersey, pal.outline);
+    px(ctx, cx - 10, ty, 20, 3, pal.jerseyLight); // clavicle & chest highlight
+    px(ctx, cx - 11, ty + 1, 3, 13, pal.jerseyShadow); // rib shadow
+    px(ctx, cx + 8, ty + 1, 3, 13, pal.jerseyShadow);
+    // Padded hexagonal chest impact zone
+    pxClipped(ctx, cx - 6, ty + 3, 12, 8, pal.jerseyDark, pal.outlineSoft);
+    px(ctx, cx - 4, ty + 4, 8, 6, pal.jersey);
+
+    // Ready outstretched arms & heavy padded gloves
+    pxClipped(ctx, cx - 19, ty + 1, 9, 6, pal.jersey, pal.outline);
+    px(ctx, cx - 18, ty + 2, 6, 2, pal.jerseyLight);
+    pxClipped(ctx, cx + 10, ty + 1, 9, 6, pal.jersey, pal.outline);
+    px(ctx, cx + 12, ty + 2, 6, 2, pal.jerseyLight);
+
+    this.drawGlove(ctx, pal, cx - 21, ty + 5 - (frame % 2));
+    this.drawGlove(ctx, pal, cx + 21, ty + 5 - (frame % 2));
+
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13);
     return canvas;
   }
 
   private drawKeeperDiveLow(pal: SpritePalette, frame: number, flipRight: boolean): HTMLCanvasElement {
     const [raw, ctx] = createPixelCanvas(64, 64);
 
-    // Draw diving to the LEFT in local space, flip horizontally if flipRight
-    px(ctx, 8, 56, 46, 4, 'rgba(0,0,0,0.3)');
+    // Realistic blurred turf slide shadow
+    px(ctx, 6, 56, 50, 4, 'rgba(0,0,0,0.35)');
+    px(ctx, 10, 55, 42, 6, 'rgba(0,0,0,0.18)');
 
     if (frame === 0) {
-      // Crouch & lean left
-      pxOutlined(ctx, 26, 30, 16, 13, pal.jersey, pal.outline);
-      pxOutlined(ctx, 28, 42, 16, 7, pal.shorts, pal.outline);
-      pxOutlined(ctx, 30, 48, 6, 9, pal.socks, pal.outline);
-      pxOutlined(ctx, 40, 48, 6, 9, pal.socks, pal.outline);
-      this.drawGlove(ctx, pal, 16, 36);
-      this.drawGlove(ctx, pal, 20, 42);
-      this.drawKeeperHeadFront(ctx, pal, 28, 18, true);
+      // Explosive lateral crouch & spring load
+      pxClipped(ctx, 24, 28, 18, 14, pal.jersey, pal.outline);
+      px(ctx, 24, 29, 18, 3, pal.jerseyLight);
+      pxClipped(ctx, 26, 40, 18, 8, pal.shorts, pal.outline);
+      pxClipped(ctx, 28, 46, 7, 10, pal.socks, pal.outline);
+      pxClipped(ctx, 39, 46, 7, 10, pal.socks, pal.outline);
+      pxClipped(ctx, 26, 54, 9, 4, pal.boots, pal.outline);
+      pxClipped(ctx, 40, 54, 9, 4, pal.boots, pal.outline);
+      this.drawGlove(ctx, pal, 14, 34);
+      this.drawGlove(ctx, pal, 18, 41);
+      this.drawKeeperHeadFront(ctx, pal, 27, 16, true);
     } else {
-      // Full horizontal stretch save!
-      const ext = frame === 2 ? -3 : 0;
-      // Legs trailing right
-      pxOutlined(ctx, 42 + ext, 43, 14, 5, pal.socks, pal.outline);
-      pxOutlined(ctx, 44 + ext, 49, 13, 5, pal.socks, pal.outline);
-      pxOutlined(ctx, 55 + ext, 42, 5, 6, pal.boots, pal.outline);
-      pxOutlined(ctx, 56 + ext, 48, 5, 6, pal.boots, pal.outline);
+      // Full horizontal fingertip extension save!
+      const ext = frame === 2 ? -4 : 0;
+      // Scissor legs trailing right with aerodynamic calf shape
+      pxClipped(ctx, 42 + ext, 42, 14, 6, pal.socks, pal.outline);
+      px(ctx, 43 + ext, 43, 12, 2, pal.jerseyLight);
+      pxClipped(ctx, 45 + ext, 48, 13, 6, pal.socksDark, pal.outline);
+      pxClipped(ctx, 55 + ext, 41, 6, 7, pal.boots, pal.outline);
+      px(ctx, 56 + ext, 42, 4, 3, pal.bootsLight);
+      pxClipped(ctx, 57 + ext, 47, 6, 7, pal.boots, pal.outline);
 
-      // Shorts
-      pxOutlined(ctx, 34 + ext, 41, 10, 11, pal.shorts, pal.outline);
-      // Horizontal torso
-      pxOutlined(ctx, 20 + ext, 39, 16, 12, pal.jersey, pal.outline);
-      px(ctx, 20 + ext, 39, 16, 3, pal.jerseyLight);
+      // Shorts with hip rotation fold
+      pxClipped(ctx, 33 + ext, 40, 12, 12, pal.shorts, pal.outline);
+      px(ctx, 33 + ext, 46, 12, 4, pal.shortsDark);
 
-      // Head looking at ball
-      this.drawKeeperHeadFront(ctx, pal, 19 + ext, 30, true);
+      // Horizontal athletic torso
+      pxClipped(ctx, 18 + ext, 37, 18, 13, pal.jersey, pal.outline);
+      px(ctx, 18 + ext, 38, 18, 3, pal.jerseyLight);
+      px(ctx, 20 + ext, 42, 12, 6, pal.jerseyDark);
 
-      // Fully outstretched arms & giant goalkeeper gloves on the left!
-      pxOutlined(ctx, 9 + ext, 39, 12, 5, pal.jersey, pal.outline);
-      pxOutlined(ctx, 10 + ext, 45, 11, 5, pal.jerseyDark, pal.outline);
-      this.drawGlove(ctx, pal, 7 + ext, 40);
-      this.drawGlove(ctx, pal, 8 + ext, 47);
+      // Head locked on ball
+      this.drawKeeperHeadFront(ctx, pal, 18 + ext, 27, true);
+
+      // Fully outstretched arms & pro gloves touching turf/corner
+      pxClipped(ctx, 8 + ext, 37, 13, 6, pal.jersey, pal.outline);
+      px(ctx, 9 + ext, 38, 10, 2, pal.jerseyLight);
+      pxClipped(ctx, 9 + ext, 43, 12, 6, pal.jerseyDark, pal.outline);
+      this.drawGlove(ctx, pal, 5 + ext, 38);
+      this.drawGlove(ctx, pal, 6 + ext, 46);
     }
 
     return flipRight ? this.flipHorizontal(raw) : raw;
@@ -519,41 +739,46 @@ export class PixelSpriteBank {
     const [raw, ctx] = createPixelCanvas(64, 64);
 
     if (frame === 0) {
-      // Explosive upward coil
-      pxOutlined(ctx, 24, 26, 16, 14, pal.jersey, pal.outline);
-      pxOutlined(ctx, 25, 39, 15, 7, pal.shorts, pal.outline);
-      pxOutlined(ctx, 26, 46, 6, 10, pal.socks, pal.outline);
-      pxOutlined(ctx, 35, 46, 6, 10, pal.socks, pal.outline);
-      this.drawGlove(ctx, pal, 15, 22);
-      this.drawGlove(ctx, pal, 22, 18);
-      this.drawKeeperHeadFront(ctx, pal, 28, 14, true);
+      // Explosive upward jump compression
+      pxClipped(ctx, 23, 24, 18, 15, pal.jersey, pal.outline);
+      px(ctx, 23, 25, 18, 3, pal.jerseyLight);
+      pxClipped(ctx, 24, 37, 17, 8, pal.shorts, pal.outline);
+      pxClipped(ctx, 25, 44, 7, 11, pal.socks, pal.outline);
+      pxClipped(ctx, 35, 44, 7, 11, pal.socks, pal.outline);
+      this.drawGlove(ctx, pal, 13, 20);
+      this.drawGlove(ctx, pal, 21, 15);
+      this.drawKeeperHeadFront(ctx, pal, 27, 12, true);
     } else {
-      // Diagonal mid-air superman dive toward top-left corner!
-      const lift = frame === 2 ? -3 : 0;
-      // Airborne shadow
-      px(ctx, 16, 58, 28, 3, 'rgba(0,0,0,0.22)');
+      // Diagonal mid-air superman dive toward top corner!
+      const lift = frame === 2 ? -4 : 0;
+      // Soft mid-air shadow below
+      px(ctx, 14, 58, 32, 3, 'rgba(0,0,0,0.24)');
 
-      // Trailing bent legs bottom-right
-      pxOutlined(ctx, 40, 38 + lift, 12, 6, pal.socks, pal.outline);
-      pxOutlined(ctx, 38, 45 + lift, 11, 6, pal.socks, pal.outline);
-      pxOutlined(ctx, 51, 40 + lift, 5, 6, pal.boots, pal.outline);
-      pxOutlined(ctx, 48, 47 + lift, 5, 6, pal.boots, pal.outline);
+      // Trailing dynamic legs
+      pxClipped(ctx, 39, 36 + lift, 13, 7, pal.socks, pal.outline);
+      px(ctx, 40, 37 + lift, 11, 2, pal.jerseyLight);
+      pxClipped(ctx, 37, 43 + lift, 12, 7, pal.socksDark, pal.outline);
+      pxClipped(ctx, 51, 38 + lift, 6, 7, pal.boots, pal.outline);
+      pxClipped(ctx, 48, 45 + lift, 6, 7, pal.boots, pal.outline);
 
-      // Shorts
-      pxOutlined(ctx, 32, 33 + lift, 11, 10, pal.shorts, pal.outline);
+      // Shorts angled upward
+      pxClipped(ctx, 30, 31 + lift, 13, 11, pal.shorts, pal.outline);
+      px(ctx, 32, 36 + lift, 11, 4, pal.shortsDark);
 
-      // Diagonal torso
-      pxOutlined(ctx, 20, 25 + lift, 15, 13, pal.jersey, pal.outline);
-      px(ctx, 20, 25 + lift, 15, 3, pal.jerseyLight);
+      // Diagonal athletic torso
+      pxClipped(ctx, 18, 23 + lift, 17, 14, pal.jersey, pal.outline);
+      px(ctx, 18, 24 + lift, 17, 3, pal.jerseyLight);
+      px(ctx, 20, 28 + lift, 11, 6, pal.jerseyDark);
 
-      // Head
-      this.drawKeeperHeadFront(ctx, pal, 22, 14 + lift, true);
+      // Focused head
+      this.drawKeeperHeadFront(ctx, pal, 21, 12 + lift, true);
 
-      // Top-left reaching arms & gloves!
-      pxOutlined(ctx, 10, 17 + lift, 12, 5, pal.jersey, pal.outline);
-      pxOutlined(ctx, 12, 24 + lift, 10, 5, pal.jerseyDark, pal.outline);
-      this.drawGlove(ctx, pal, 7, 15 + lift);
-      this.drawGlove(ctx, pal, 10, 23 + lift);
+      // Reaching outstretched arms & giant glove tip
+      pxClipped(ctx, 8, 15 + lift, 13, 6, pal.jersey, pal.outline);
+      px(ctx, 9, 16 + lift, 10, 2, pal.jerseyLight);
+      pxClipped(ctx, 11, 22 + lift, 11, 6, pal.jerseyDark, pal.outline);
+      this.drawGlove(ctx, pal, 5, 13 + lift);
+      this.drawGlove(ctx, pal, 8, 22 + lift);
     }
 
     return flipRight ? this.flipHorizontal(raw) : raw;
@@ -562,20 +787,20 @@ export class PixelSpriteBank {
   private drawKeeperCatchCenter(pal: SpritePalette, frame: number): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const cx = 32;
-    const ty = 23 + frame;
+    const ty = 22 + frame;
 
-    px(ctx, cx - 13, 57, 26, 4, 'rgba(0,0,0,0.35)');
-    pxOutlined(ctx, cx - 9, ty + 19, 6, 11, pal.socks, pal.outline);
-    pxOutlined(ctx, cx + 3, ty + 19, 6, 11, pal.socks, pal.outline);
-    pxOutlined(ctx, cx - 10, ty + 29, 7, 4, pal.boots, pal.outline);
-    pxOutlined(ctx, cx + 3, ty + 29, 7, 4, pal.boots, pal.outline);
-    pxOutlined(ctx, cx - 9, ty + 13, 18, 7, pal.shorts, pal.outline);
-    pxOutlined(ctx, cx - 9, ty, 18, 14, pal.jersey, pal.outline);
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 12, true);
+    px(ctx, cx - 14, 57, 28, 4, 'rgba(0,0,0,0.35)');
+    pxClipped(ctx, cx - 9, ty + 18, 7, 11, pal.socks, pal.outline);
+    pxClipped(ctx, cx + 3, ty + 18, 7, 11, pal.socks, pal.outline);
+    pxClipped(ctx, cx - 10, ty + 28, 8, 5, pal.boots, pal.outline);
+    pxClipped(ctx, cx + 3, ty + 28, 8, 5, pal.boots, pal.outline);
+    pxClipped(ctx, cx - 10, ty + 12, 20, 8, pal.shorts, pal.outline);
+    pxClipped(ctx, cx - 10, ty - 1, 20, 15, pal.jersey, pal.outline);
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
 
-    // Both gloves locked together over chest!
-    this.drawGlove(ctx, pal, cx - 4, ty + 6);
-    this.drawGlove(ctx, pal, cx + 4, ty + 6);
+    // Both gloves firmly clasped around ball at chest level!
+    this.drawGlove(ctx, pal, cx - 5, ty + 6);
+    this.drawGlove(ctx, pal, cx + 5, ty + 6);
     return canvas;
   }
 
@@ -584,28 +809,28 @@ export class PixelSpriteBank {
     const cx = 32;
     const ty = win ? (frame % 2 === 1 ? 19 : 23) : 31;
 
-    px(ctx, cx - 13, 57, 26, 4, 'rgba(0,0,0,0.35)');
+    px(ctx, cx - 14, 57, 28, 4, 'rgba(0,0,0,0.35)');
 
     if (win) {
-      pxOutlined(ctx, cx - 9, ty + 19, 6, 11, pal.socks, pal.outline);
-      pxOutlined(ctx, cx + 3, ty + 19, 6, 11, pal.socks, pal.outline);
-      pxOutlined(ctx, cx - 10, ty + 29, 7, 4, pal.boots, pal.outline);
-      pxOutlined(ctx, cx + 3, ty + 29, 7, 4, pal.boots, pal.outline);
-      pxOutlined(ctx, cx - 9, ty + 13, 18, 7, pal.shorts, pal.outline);
-      pxOutlined(ctx, cx - 9, ty, 18, 14, pal.jersey, pal.outline);
-      // Victory fists up!
-      pxOutlined(ctx, cx - 15, ty - 6, 6, 10, pal.jersey, pal.outline);
-      pxOutlined(ctx, cx + 9, ty - 6, 6, 10, pal.jersey, pal.outline);
-      this.drawGlove(ctx, pal, cx - 14, ty - 9);
-      this.drawGlove(ctx, pal, cx + 14, ty - 9);
-      this.drawKeeperHeadFront(ctx, pal, cx, ty - 12, true);
+      pxClipped(ctx, cx - 9, ty + 18, 7, 11, pal.socks, pal.outline);
+      pxClipped(ctx, cx + 3, ty + 18, 7, 11, pal.socks, pal.outline);
+      pxClipped(ctx, cx - 10, ty + 28, 8, 5, pal.boots, pal.outline);
+      pxClipped(ctx, cx + 3, ty + 28, 8, 5, pal.boots, pal.outline);
+      pxClipped(ctx, cx - 10, ty + 12, 20, 8, pal.shorts, pal.outline);
+      pxClipped(ctx, cx - 10, ty - 1, 20, 15, pal.jersey, pal.outline);
+      // Victory fists pump high!
+      pxClipped(ctx, cx - 16, ty - 7, 7, 11, pal.jersey, pal.outline);
+      pxClipped(ctx, cx + 9, ty - 7, 7, 11, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 15, ty - 10, false);
+      this.drawGlove(ctx, pal, cx + 15, ty - 10, false);
+      this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
     } else {
-      // Slumped on knees
-      pxOutlined(ctx, cx - 10, 48, 20, 8, pal.shorts, pal.outline);
-      pxOutlined(ctx, cx - 9, 36, 18, 13, pal.jersey, pal.outline);
-      this.drawGlove(ctx, pal, cx - 12, 53);
-      this.drawGlove(ctx, pal, cx + 12, 53);
-      this.drawKeeperHeadFront(ctx, pal, cx, 26, false);
+      // Slumped on knees in defeat
+      pxClipped(ctx, cx - 11, 47, 22, 9, pal.shorts, pal.outline);
+      pxClipped(ctx, cx - 10, 34, 20, 15, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 13, 52, true);
+      this.drawGlove(ctx, pal, cx + 13, 52, true);
+      this.drawKeeperHeadFront(ctx, pal, cx, 24, false);
     }
     return canvas;
   }
@@ -615,33 +840,35 @@ export class PixelSpriteBank {
     const cx = 32;
     const ty = 22 + (frame % 2 === 0 ? 0 : 2);
 
-    px(ctx, cx - 13, 57, 26, 4, 'rgba(0,0,0,0.35)');
+    px(ctx, cx - 14, 57, 28, 4, 'rgba(0,0,0,0.35)');
 
-    // Wiggle dance legs
+    // Wiggle dance legs with athletic musculature
     const legShift = frame === 0 ? -2 : frame === 2 ? 2 : 0;
-    pxOutlined(ctx, cx - 10 + legShift, ty + 19, 6, 11, pal.socks, pal.outline);
-    pxOutlined(ctx, cx + 4 - legShift, ty + 19, 6, 11, pal.socks, pal.outline);
-    pxOutlined(ctx, cx - 11 + legShift, ty + 29, 7, 4, pal.boots, pal.outline);
-    pxOutlined(ctx, cx + 4 - legShift, ty + 29, 7, 4, pal.boots, pal.outline);
-    pxOutlined(ctx, cx - 9, ty + 13, 18, 7, pal.shorts, pal.outline);
-    pxOutlined(ctx, cx - 9, ty, 18, 14, pal.jersey, pal.outline);
+    pxClipped(ctx, cx - 10 + legShift, ty + 18, 7, 11, pal.socks, pal.outline);
+    pxClipped(ctx, cx + 4 - legShift, ty + 18, 7, 11, pal.socks, pal.outline);
+    pxClipped(ctx, cx - 11 + legShift, ty + 28, 8, 5, pal.boots, pal.outline);
+    pxClipped(ctx, cx + 4 - legShift, ty + 28, 8, 5, pal.boots, pal.outline);
+    pxClipped(ctx, cx - 10, ty + 12, 20, 8, pal.shorts, pal.outline);
+    pxClipped(ctx, cx - 10, ty - 1, 20, 15, pal.jersey, pal.outline);
 
     // Finger wag / Shhh taunt or dancing arms!
     if (frame % 2 === 0) {
-      // Left arm on hip, right glove pointing finger up!
-      pxOutlined(ctx, cx - 14, ty + 4, 6, 8, pal.jersey, pal.outline);
-      this.drawGlove(ctx, pal, cx - 12, ty + 11);
-      pxOutlined(ctx, cx + 9, ty - 6, 6, 11, pal.jersey, pal.outline);
-      this.drawGlove(ctx, pal, cx + 13, ty - 10);
+      // Left glove on hip, right glove pointing finger up (finger-wag!)
+      pxClipped(ctx, cx - 15, ty + 3, 7, 9, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 13, ty + 11, false);
+      pxClipped(ctx, cx + 9, ty - 7, 7, 12, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx + 14, ty - 11, false);
+      // Index finger sticking up
+      px(ctx, cx + 14, ty - 16, 2, 5, pal.glove);
     } else {
       // Arms waving side to side
-      pxOutlined(ctx, cx - 15, ty - 2, 6, 9, pal.jersey, pal.outline);
-      pxOutlined(ctx, cx + 9, ty + 4, 6, 9, pal.jersey, pal.outline);
-      this.drawGlove(ctx, pal, cx - 15, ty - 5);
-      this.drawGlove(ctx, pal, cx + 14, ty + 12);
+      pxClipped(ctx, cx - 16, ty - 3, 7, 10, pal.jersey, pal.outline);
+      pxClipped(ctx, cx + 9, ty + 3, 7, 10, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 16, ty - 6, true);
+      this.drawGlove(ctx, pal, cx + 15, ty + 12, true);
     }
 
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 12, true);
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
     return canvas;
   }
 
