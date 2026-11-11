@@ -278,6 +278,26 @@ export class RetroAudioEngine {
     osc.stop(now + 0.42);
   }
 
+  public playTauntFanfare(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Funky bouncy arcade taunt chime
+    const notes = [523.25, 659.25, 783.99, 1046.5, 880];
+    notes.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      const t = now + idx * 0.07;
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.13);
+    });
+  }
+
   private playNoiseBurst(duration: number, filterFreq: number, volume: number): void {
     const ctx = this.ensureContext();
     if (!ctx) return;

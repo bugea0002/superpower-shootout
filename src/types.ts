@@ -21,6 +21,8 @@ export type TurnPhase =
 export type KickerSkillId = 'none' | 'flame' | 'mirage' | 'curve' | 'chrono';
 export type KeeperSkillId = 'none' | 'blackhole' | 'blink' | 'titan' | 'icewall';
 
+export type CelebrationType = 'siu' | 'shhh' | 'samba' | 'default';
+
 export type DiveZone =
   | 'top_left'
   | 'top_center'
@@ -37,6 +39,7 @@ export interface SkillDefinition<T extends string> {
   nameKo: string;
   nameEn: string;
   manaCost: number;
+  cooldownRounds: number;
   color: string;
   accentColor: string;
   desc: string;
@@ -80,7 +83,8 @@ export interface BallState {
 export interface KickerActor {
   x: number;
   y: number;
-  anim: 'idle' | 'charge' | 'runup' | 'kick' | 'celebrate' | 'despair';
+  anim: 'idle' | 'charge' | 'runup' | 'kick' | 'celebrate' | 'despair' | 'taunt';
+  celebrationType?: CelebrationType;
   frame: number;
   animTimer: number;
   skillAura: KickerSkillId;
@@ -101,7 +105,9 @@ export interface KeeperActor {
     | 'dive_top_right'
     | 'catch_center'
     | 'celebrate'
-    | 'despair';
+    | 'despair'
+    | 'taunt';
+  celebrationType?: CelebrationType;
   frame: number;
   animTimer: number;
   hasDived: boolean;

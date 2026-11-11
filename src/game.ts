@@ -83,6 +83,13 @@ export class SuperpowerShootoutGame {
   private selectedKickerSkill: KickerSkillId = 'none';
   private selectedKeeperSkill: KeeperSkillId = 'none';
 
+  // Skill cooldown tracking (round number when skill was last used)
+  private kickerSkillCooldowns: Map<string, number> = new Map();
+  private keeperSkillCooldowns: Map<string, number> = new Map();
+
+  // Mobile on-screen keeper dive zone buttons
+  private keeperZoneButtons: Array<{ zone: DiveZone; x: number; y: number; w: number; h: number; label: string }> = [];
+
   // Aim & Power meter
   private aimX = 240;
   private aimY = 96;
@@ -131,6 +138,22 @@ export class SuperpowerShootoutGame {
     this.setupNetworkCallbacks();
     this.resetTurnActors();
     this.bindEvents();
+    this.checkUrlRoomParam();
+  }
+
+  private checkUrlRoomParam(): void {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const room = params.get('room');
+      if (room) {
+        this.onlineRoomInput = room.trim().toUpperCase().slice(0, 6);
+        this.gameMode = 'online_multi';
+        this.screen = 'online_lobby';
+        setTimeout(() => {
+          this.net.connect(this.onlineRoomInput);
+        }, 500);
+      }
+    } catch (_) {}
   }
 
   private setupNetworkCallbacks(): void {
@@ -219,7 +242,7 @@ export class SuperpowerShootoutGame {
       if (this.screen === 'playing') {
         const humanKicking = this.isHumanControllingKicker();
         const humanKeeping = this.isHumanControllingKeeper();
-        if (humanKicking && this.phase === 'aiming' && this.gameMode === 'vs_ai') {
+        if (humanKicking && this.phase === 'aiming') {
           this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
           this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
         } else if (humanKeeping && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
@@ -229,6 +252,28 @@ export class SuperpowerShootoutGame {
         }
       }
     });
+
+    this.canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      if (!e.touches[0]) return;
+      const t = e.touches[0];
+      const pt = this.clientToVirtual(t.clientX, t.clientY);
+      this.mousePos.x = pt.x;
+      this.mousePos.y = pt.y;
+
+      if (this.screen === 'playing') {
+        const humanKicking = this.isHumanControllingKicker();
+        const humanKeeping = this.isHumanControllingKeeper();
+        if (humanKicking && (this.phase === 'aiming' || this.phase === 'charging')) {
+          this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
+          this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
+        } else if (humanKeeping && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
+          if (pt.y < 180) {
+            this.keeperAimZone = coordsToZone(pt.x, pt.y, this.goal);
+          }
+        }
+      }
+    }, { passive: false });
 
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
@@ -359,6 +404,17 @@ export class SuperpowerShootoutGame {
     }
 
     if (this.screen === 'online_lobby') {
+      // Room code box click (prompts mobile keyboard or quick code input)
+      if (vx >= 160 && vx <= 320 && vy >= 85 && vy <= 125) {
+        this.audio.playUiSelect();
+        const entered = window.prompt('참가할 4~6자리 방 코드를 입력하세요:', this.onlineRoomInput);
+        if (entered !== null) {
+          const sanitized = entered.trim().toUpperCase().slice(0, 6);
+          if (sanitized) this.onlineRoomInput = sanitized;
+        }
+        return;
+      }
+
       // Connect button click
       if (vx >= 140 && vx <= 340 && vy >= 170 && vy <= 198) {
         this.audio.playUiSelect();
@@ -382,6 +438,17 @@ export class SuperpowerShootoutGame {
     }
 
     if (this.screen === 'playing') {
+      // Check keeper 6-zone D-pad clicks
+      if (this.isHumanControllingKeeper()) {
+        for (const btn of this.keeperZoneButtons) {
+          if (vx >= btn.x && vx <= btn.x + btn.w && vy >= btn.y && vy <= btn.y + btn.h) {
+            this.keeperAimZone = btn.zone;
+            this.audio.playUiSelect();
+            return;
+          }
+        }
+      }
+
       // Check skill slot clicks at bottom bar
       for (const slot of this.skillSlotRects) {
         if (vx >= slot.x && vx <= slot.x + slot.w && vy >= slot.y && vy <= slot.y + slot.h) {
@@ -447,8 +514,19 @@ export class SuperpowerShootoutGame {
     return this.turnRole === 'player_keep';
   }
 
+  private getSkillCooldownRemaining(skillId: string, isKeeper: boolean): number {
+    const map = isKeeper ? this.keeperSkillCooldowns : this.kickerSkillCooldowns;
+    const lastRound = map.get(skillId);
+    if (lastRound === undefined) return 0;
+    const def = isKeeper
+      ? getKeeperSkill(skillId as KeeperSkillId)
+      : getKickerSkill(skillId as KickerSkillId);
+    const cd = def?.cooldownRounds ?? 1;
+    const diff = this.round - lastRound;
+    return Math.max(0, cd - diff);
+  }
+
   private tryToggleSkillSlot(slotIndex: number): void {
-    // Allow human kicker during aiming, or human keeper before diving
     if (this.gameMode === 'vs_ai') {
       if (this.turnRole === 'player_kick' && this.phase === 'aiming') {
         const skill = KICKER_SKILLS[slotIndex];
@@ -457,11 +535,19 @@ export class SuperpowerShootoutGame {
           this.selectedKickerSkill = 'none';
           this.kicker.skillAura = 'none';
           this.audio.playUiSelect();
-        } else if (this.blueMana >= skill.manaCost) {
-          this.selectedKickerSkill = skill.id;
-          this.kicker.skillAura = skill.id;
-          this.audio.playSkillToggle();
-          this.vfx.spawnShockwave(this.kicker.x, this.kicker.y + 8, 28, skill.color, 0.25);
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, false);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (this.blueMana >= skill.manaCost) {
+            this.selectedKickerSkill = skill.id;
+            this.kicker.skillAura = skill.id;
+            this.audio.playSkillToggle();
+            this.vfx.spawnShockwave(this.kicker.x, this.kicker.y + 8, 28, skill.color, 0.25);
+          }
         }
       } else if (
         this.turnRole === 'player_keep' &&
@@ -472,10 +558,64 @@ export class SuperpowerShootoutGame {
         if (this.selectedKeeperSkill === skill.id) {
           this.selectedKeeperSkill = 'none';
           this.audio.playUiSelect();
-        } else if (this.blueMana >= skill.manaCost) {
-          this.selectedKeeperSkill = skill.id;
-          this.audio.playSkillToggle();
-          this.vfx.spawnShockwave(this.keeper.x, this.keeper.y, 24, skill.color, 0.25);
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, true);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (this.blueMana >= skill.manaCost) {
+            this.selectedKeeperSkill = skill.id;
+            this.audio.playSkillToggle();
+            this.vfx.spawnShockwave(this.keeper.x, this.keeper.y, 24, skill.color, 0.25);
+          }
+        }
+      }
+    } else if (this.gameMode === 'online_multi') {
+      const myMana = this.net.myRole === 'p1' ? this.blueMana : this.redMana;
+      if (this.isHumanControllingKicker() && this.phase === 'aiming') {
+        const skill = KICKER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKickerSkill === skill.id) {
+          this.selectedKickerSkill = 'none';
+          this.kicker.skillAura = 'none';
+          this.audio.playUiSelect();
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, false);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (myMana >= skill.manaCost) {
+            this.selectedKickerSkill = skill.id;
+            this.kicker.skillAura = skill.id;
+            this.audio.playSkillToggle();
+            this.vfx.spawnShockwave(this.kicker.x, this.kicker.y + 8, 28, skill.color, 0.25);
+          }
+        }
+      } else if (
+        this.isHumanControllingKeeper() &&
+        (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived))
+      ) {
+        const skill = KEEPER_SKILLS[slotIndex];
+        if (!skill) return;
+        if (this.selectedKeeperSkill === skill.id) {
+          this.selectedKeeperSkill = 'none';
+          this.audio.playUiSelect();
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, true);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (myMana >= skill.manaCost) {
+            this.selectedKeeperSkill = skill.id;
+            this.audio.playSkillToggle();
+            this.vfx.spawnShockwave(this.keeper.x, this.keeper.y, 24, skill.color, 0.25);
+          }
         }
       }
     } else {
@@ -490,10 +630,18 @@ export class SuperpowerShootoutGame {
           this.selectedKickerSkill = 'none';
           this.kicker.skillAura = 'none';
           this.audio.playUiSelect();
-        } else if (kickerMana >= skill.manaCost) {
-          this.selectedKickerSkill = skill.id;
-          this.kicker.skillAura = skill.id;
-          this.audio.playSkillToggle();
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, false);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (kickerMana >= skill.manaCost) {
+            this.selectedKickerSkill = skill.id;
+            this.kicker.skillAura = skill.id;
+            this.audio.playSkillToggle();
+          }
         }
       } else if (this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived)) {
         const skill = KEEPER_SKILLS[slotIndex];
@@ -501,9 +649,17 @@ export class SuperpowerShootoutGame {
         if (this.selectedKeeperSkill === skill.id) {
           this.selectedKeeperSkill = 'none';
           this.audio.playUiSelect();
-        } else if (keeperMana >= skill.manaCost) {
-          this.selectedKeeperSkill = skill.id;
-          this.audio.playSkillToggle();
+        } else {
+          const cd = this.getSkillCooldownRemaining(skill.id, true);
+          if (cd > 0) {
+            this.audio.playPostHit();
+            this.vfx.showBanner('COOLDOWN!', `${cd}라운드 후 재사용 가능`, '#94a3b8', '#0f172a', 0.8);
+            return;
+          }
+          if (keeperMana >= skill.manaCost) {
+            this.selectedKeeperSkill = skill.id;
+            this.audio.playSkillToggle();
+          }
         }
       }
     }
@@ -554,6 +710,8 @@ export class SuperpowerShootoutGame {
     this.blueMana = 70;
     this.redMana = 70;
     this.winnerText = '';
+    this.kickerSkillCooldowns.clear();
+    this.keeperSkillCooldowns.clear();
 
     this.audio.startBgm(false);
     this.setupTurn();
@@ -636,14 +794,27 @@ export class SuperpowerShootoutGame {
         ? this.turnRole === 'player_kick'
           ? 'P1 KICKER vs P2 KEEPER'
           : 'P2 KICKER vs P1 KEEPER'
+        : this.gameMode === 'online_multi'
+        ? this.isHumanControllingKicker()
+          ? 'YOUR KICK! 골문을 노려라!'
+          : 'YOUR SAVE! 상대의 슛을 막아라!'
         : this.turnRole === 'player_kick'
         ? 'YOUR KICK! 골문을 노려라!'
         : 'YOUR SAVE! 슈팅을 막아내라!';
 
+    const bannerColor =
+      this.gameMode === 'online_multi'
+        ? this.isHumanControllingKicker()
+          ? '#38bdf8'
+          : '#fb923c'
+        : this.turnRole === 'player_kick'
+        ? '#38bdf8'
+        : '#fb923c';
+
     this.vfx.showBanner(
       roundTitle,
       roleSub,
-      this.turnRole === 'player_kick' ? '#38bdf8' : '#fb923c',
+      bannerColor,
       '#0f172a',
       0.95
     );
@@ -705,7 +876,14 @@ export class SuperpowerShootoutGame {
     // Consume Kicker Mana if skill active
     const skillDef = getKickerSkill(this.selectedKickerSkill);
     if (skillDef) {
-      if (this.turnRole === 'player_kick') {
+      this.kickerSkillCooldowns.set(skillDef.id, this.round);
+      if (this.gameMode === 'online_multi') {
+        if (this.net.myRole === 'p1') {
+          this.blueMana = Math.max(0, this.blueMana - skillDef.manaCost);
+        } else {
+          this.redMana = Math.max(0, this.redMana - skillDef.manaCost);
+        }
+      } else if (this.turnRole === 'player_kick') {
         this.blueMana = Math.max(0, this.blueMana - skillDef.manaCost);
       } else {
         this.redMana = Math.max(0, this.redMana - skillDef.manaCost);
@@ -853,10 +1031,11 @@ export class SuperpowerShootoutGame {
 
     // Consume keeper mana if skill selected
     const skillDef = getKeeperSkill(skillId);
-    const keeperIsBlue = this.turnRole === 'player_keep';
+    const keeperIsBlue = this.gameMode === 'online_multi' ? this.net.myRole === 'p1' : this.turnRole === 'player_keep';
     const currentMana = keeperIsBlue ? this.blueMana : this.redMana;
 
     if (skillDef && currentMana >= skillDef.manaCost) {
+      this.keeperSkillCooldowns.set(skillDef.id, this.round);
       if (keeperIsBlue) this.blueMana -= skillDef.manaCost;
       else this.redMana -= skillDef.manaCost;
 
@@ -1246,37 +1425,40 @@ export class SuperpowerShootoutGame {
     if (hitPost) {
       this.recordShotResult('post');
       this.phase = 'resolution';
-      this.phaseTimer = 1.65;
+      this.phaseTimer = 1.8;
       this.ball.deflected = true;
       this.ball.vx = bx < 240 ? -130 : 130;
       this.ball.vy = -85;
       this.kicker.anim = 'despair';
-      this.keeper.anim = 'celebrate';
+      // Keeper taunts on opponent miss!
+      this.keeper.anim = Math.random() < 0.6 ? 'taunt' : 'celebrate';
       this.vfx.spawnShockwave(bx, by, 26, '#facc15', 0.25);
       this.vfx.spawnBurst(bx, by, 18, ['#ffffff', '#facc15', '#cbd5e1'], 50, 160, 3, 120);
       this.vfx.triggerShake(4, 0.22);
       this.vfx.showBanner('POST HIT!', '골대를 강타하고 튕겨나갑니다!', '#facc15', '#0f172a', 1.4);
       this.audio.playPostHit();
+      if (this.keeper.anim === 'taunt') this.audio.playTauntFanfare();
       return;
     }
 
     // Wide or over the bar!
     this.recordShotResult('miss');
     this.phase = 'resolution';
-    this.phaseTimer = 1.55;
+    this.phaseTimer = 1.7;
     this.ball.deflected = true;
     this.ball.vx = (bx - 240) * 0.7;
     this.ball.vy = -55;
     this.kicker.anim = 'despair';
-    this.keeper.anim = 'celebrate';
-    this.vfx.showBanner('MISSED!', '골문을 벗어났습니다!', '#f87171', '#0f172a', 1.35);
+    this.keeper.anim = Math.random() < 0.6 ? 'taunt' : 'celebrate';
+    this.vfx.showBanner('MISSED!', '골문을 완전히 벗어났습니다!', '#f87171', '#0f172a', 1.35);
     this.audio.playMissSigh();
+    if (this.keeper.anim === 'taunt') this.audio.playTauntFanfare();
   }
 
   private triggerGoalResolution(title: string, subtitle: string): void {
     this.recordShotResult('goal');
     this.phase = 'resolution';
-    this.phaseTimer = 1.85;
+    this.phaseTimer = 1.95;
 
     // Bulge reactive pixel net!
     this.netBulgeX = this.ball.x;
@@ -1288,7 +1470,9 @@ export class SuperpowerShootoutGame {
     this.ball.vx = (240 - this.ball.x) * 0.2;
     this.ball.vy = 28;
 
-    this.kicker.anim = 'celebrate';
+    // Kicker celebration: SIUU / Taunt or Celebrate!
+    const doTaunt = Math.random() < 0.55;
+    this.kicker.anim = doTaunt ? 'taunt' : 'celebrate';
     this.keeper.anim = 'despair';
 
     // Reward kicker bonus mana
@@ -1303,14 +1487,16 @@ export class SuperpowerShootoutGame {
     this.vfx.triggerShake(5.5, 0.32);
     this.vfx.spawnShockwave(this.ball.x, this.ball.y, 44, '#facc15', 0.35);
     this.vfx.spawnConfetti();
-    this.vfx.showBanner(title, subtitle, '#facc15', '#0f172a', 1.65);
+    const finalTitle = doTaunt ? `${title} (SIUUU!!)` : title;
+    this.vfx.showBanner(finalTitle, subtitle, '#facc15', '#0f172a', 1.65);
     this.audio.playGoalSwishAndCheer();
+    if (doTaunt) this.audio.playTauntFanfare();
   }
 
   private triggerSaveResolution(title: string, subtitle: string, color: string): void {
     this.recordShotResult('saved');
     this.phase = 'resolution';
-    this.phaseTimer = 1.75;
+    this.phaseTimer = 1.85;
 
     this.ball.deflected = true;
     if (this.keeper.blackHoleActive) {
@@ -1322,7 +1508,8 @@ export class SuperpowerShootoutGame {
     }
 
     this.kicker.anim = 'despair';
-    if (!this.keeper.hasDived) this.keeper.anim = 'catch_center';
+    const keeperDoTaunt = Math.random() < 0.5;
+    this.keeper.anim = keeperDoTaunt ? 'taunt' : 'celebrate';
 
     // Reward keeper bonus mana
     if (this.turnRole === 'player_keep') {
@@ -1338,6 +1525,9 @@ export class SuperpowerShootoutGame {
     this.vfx.spawnBurst(this.ball.x, this.ball.y, 24, ['#ffffff', color, '#facc15'], 55, 175, 4, 95);
     this.vfx.showBanner(title, subtitle, color, '#0f172a', 1.55);
     this.audio.playSaveImpact(this.keeper.skillActive !== 'none' || this.reflexBonus);
+    if (this.keeper.anim === 'taunt') {
+      this.audio.playTauntFanfare();
+    }
   }
 
   private recordShotResult(res: ShotResult): void {
@@ -1386,10 +1576,10 @@ export class SuperpowerShootoutGame {
   private updateActorFrames(dt: number): void {
     // Kicker frame advance
     this.kicker.animTimer += dt;
-    const kInterval = this.kicker.anim === 'runup' ? 0.08 : this.kicker.anim === 'kick' ? 0.09 : 0.18;
+    const kInterval = this.kicker.anim === 'runup' ? 0.08 : this.kicker.anim === 'kick' ? 0.09 : 0.16;
     if (this.kicker.animTimer >= kInterval) {
       this.kicker.animTimer = 0;
-      const maxFrames = this.kicker.anim === 'idle' || this.kicker.anim === 'runup' || this.kicker.anim === 'kick' ? 4 : 2;
+      const maxFrames = this.kicker.anim === 'idle' || this.kicker.anim === 'runup' || this.kicker.anim === 'kick' || this.kicker.anim === 'celebrate' || this.kicker.anim === 'taunt' ? 4 : 2;
       if (this.kicker.anim === 'kick') {
         this.kicker.frame = Math.min(maxFrames - 1, this.kicker.frame + 1);
       } else {
@@ -1399,12 +1589,12 @@ export class SuperpowerShootoutGame {
 
     // Keeper frame advance
     this.keeper.animTimer += dt;
-    const gInterval = this.keeper.anim.startsWith('dive') ? 0.09 : 0.18;
+    const gInterval = this.keeper.anim.startsWith('dive') ? 0.09 : 0.16;
     if (this.keeper.animTimer >= gInterval) {
       this.keeper.animTimer = 0;
       if (this.keeper.anim.startsWith('dive')) {
         this.keeper.frame = Math.min(2, this.keeper.frame + 1);
-      } else if (this.keeper.anim === 'idle') {
+      } else if (this.keeper.anim === 'idle' || this.keeper.anim === 'celebrate' || this.keeper.anim === 'taunt') {
         this.keeper.frame = (this.keeper.frame + 1) % 4;
       } else {
         this.keeper.frame = (this.keeper.frame + 1) % 2;
@@ -1650,7 +1840,10 @@ export class SuperpowerShootoutGame {
 
   private renderMatchHUD(ctx: CanvasRenderingContext2D): void {
     // Render Aim Crosshair or Keeper Glove Target first
-    if (this.gameMode === 'vs_ai' && this.turnRole === 'player_kick' && (this.phase === 'aiming' || this.phase === 'charging')) {
+    const isKickerAiming = this.isHumanControllingKicker() && (this.phase === 'aiming' || this.phase === 'charging');
+    const isKeeperAiming = this.isHumanControllingKeeper() && !this.keeper.hasDived && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight');
+
+    if (isKickerAiming) {
       const rx = Math.round(this.aimX);
       const ry = Math.round(this.aimY);
       const sweet = this.phase === 'charging' && this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
@@ -1664,12 +1857,7 @@ export class SuperpowerShootoutGame {
         ctx.fillRect(tx - 1, ty - 1, 2, 2);
       }
       this.drawPixelCrosshair(ctx, rx, ry, col);
-    } else if (
-      this.gameMode === 'vs_ai' &&
-      this.turnRole === 'player_keep' &&
-      !this.keeper.hasDived &&
-      (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')
-    ) {
+    } else if (isKeeperAiming) {
       const gp = zoneToGoalCoords(this.keeperAimZone, this.goal);
       this.drawPixelCrosshair(ctx, gp.x, gp.y, '#4ade80');
     }
@@ -1681,14 +1869,20 @@ export class SuperpowerShootoutGame {
     ctx.fillRect(8, 6, VIRTUAL_WIDTH - 16, 2);
 
     // Blue Team (Left)
+    const p1Label =
+      this.gameMode === 'local_2p'
+        ? 'P1'
+        : this.gameMode === 'online_multi'
+        ? this.net.myRole === 'p1' ? 'YOU(P1)' : 'P1'
+        : 'YOU';
     ctx.fillStyle = '#2563eb';
-    ctx.fillRect(12, 10, 52, 12);
-    ctx.font = '700 8px "Press Start 2P", monospace';
+    ctx.fillRect(12, 10, 56, 12);
+    ctx.font = '700 7px "Press Start 2P", monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(this.gameMode === 'local_2p' ? 'P1' : 'YOU', 38, 19);
+    ctx.fillText(p1Label, 40, 19);
 
-    this.renderPenaltyDots(ctx, 70, 12, this.blueHistory, true);
+    this.renderPenaltyDots(ctx, 72, 12, this.blueHistory, true);
 
     // Center Score & Round
     ctx.fillStyle = '#0f172a';
@@ -1706,12 +1900,18 @@ export class SuperpowerShootoutGame {
     ctx.fillText(this.isSuddenDeath ? 'SUDDEN DEATH' : `ROUND ${Math.min(5, this.round)}/5`, 240, 30);
 
     // Red Team (Right)
-    this.renderPenaltyDots(ctx, 292, 12, this.redHistory, false);
+    const p2Label =
+      this.gameMode === 'local_2p'
+        ? 'P2'
+        : this.gameMode === 'online_multi'
+        ? this.net.myRole === 'p2' ? 'YOU(P2)' : 'P2'
+        : this.difficulty.toUpperCase();
+    this.renderPenaltyDots(ctx, 290, 12, this.redHistory, false);
     ctx.fillStyle = '#dc2626';
-    ctx.fillRect(VIRTUAL_WIDTH - 64, 10, 52, 12);
-    ctx.font = '700 8px "Press Start 2P", monospace';
+    ctx.fillRect(VIRTUAL_WIDTH - 68, 10, 56, 12);
+    ctx.font = '700 7px "Press Start 2P", monospace';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(this.gameMode === 'local_2p' ? 'P2' : this.difficulty.toUpperCase(), VIRTUAL_WIDTH - 38, 19);
+    ctx.fillText(p2Label, VIRTUAL_WIDTH - 40, 19);
 
     // Mana Bars under each team
     this.renderManaBar(ctx, 12, 25, 168, 7, this.blueMana, '#38bdf8');
@@ -1730,7 +1930,7 @@ export class SuperpowerShootoutGame {
       ctx.font = '700 7px "Press Start 2P", monospace';
       ctx.textAlign = 'left';
       ctx.fillStyle = '#facc15';
-      ctx.fillText(this.phase === 'charging' ? 'RELEASE SPACE!' : 'HOLD SPACE:SHOOT', gx, gy - 3);
+      ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : 'HOLD SPACE/클릭', gx, gy - 3);
 
       // Meter track zones
       ctx.fillStyle = '#334155';
@@ -1759,11 +1959,56 @@ export class SuperpowerShootoutGame {
       ctx.font = '700 8px "Noto Sans KR", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = '#4ade80';
-      ctx.fillText('방향키 + SPACE 타이밍 세이브!', 402, 185);
+      ctx.fillText('SPACE / 탭: 세이브 점프!', 402, 185);
+
+      // Render on-screen 6-zone D-pad for touch / mobile users
+      this.renderKeeperZonePad(ctx);
     }
 
     // ---------------- BOTTOM SUPERPOWER SKILL BAR ----------------
     this.renderSkillBar(ctx);
+  }
+
+  private renderKeeperZonePad(ctx: CanvasRenderingContext2D): void {
+    this.keeperZoneButtons = [];
+    const padX = 14;
+    const padY = 160;
+    const btnW = 34;
+    const btnH = 22;
+    const gap = 3;
+
+    const layout: Array<{ zone: DiveZone; col: number; row: number; label: string }> = [
+      { zone: 'top_left', col: 0, row: 0, label: '↖좌상' },
+      { zone: 'top_center', col: 1, row: 0, label: '↑중상' },
+      { zone: 'top_right', col: 2, row: 0, label: '↗우상' },
+      { zone: 'low_left', col: 0, row: 1, label: '↙좌하' },
+      { zone: 'center', col: 1, row: 1, label: '•중앙' },
+      { zone: 'low_right', col: 2, row: 1, label: '↘우하' },
+    ];
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+    ctx.fillRect(padX - 4, padY - 14, (btnW + gap) * 3 + 5, (btnH + gap) * 2 + 18);
+    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('다이빙 방향 선택 (터치)', padX + (btnW + gap) * 1.5, padY - 4);
+
+    layout.forEach((btn) => {
+      const bx = padX + btn.col * (btnW + gap);
+      const by = padY + btn.row * (btnH + gap);
+      this.keeperZoneButtons.push({ zone: btn.zone, x: bx, y: by, w: btnW, h: btnH, label: btn.label });
+
+      const isAimed = this.keeperAimZone === btn.zone;
+      ctx.fillStyle = isAimed ? '#0284c7' : 'rgba(30, 41, 59, 0.9)';
+      ctx.fillRect(bx, by, btnW, btnH);
+      ctx.strokeStyle = isAimed ? '#38bdf8' : '#475569';
+      ctx.lineWidth = isAimed ? 1.5 : 1;
+      ctx.strokeRect(bx + 0.5, by + 0.5, btnW - 1, btnH - 1);
+
+      ctx.fillStyle = isAimed ? '#facc15' : '#e2e8f0';
+      ctx.font = '700 7px "Noto Sans KR", sans-serif';
+      ctx.fillText(btn.label, bx + btnW / 2, by + btnH / 2 + 3);
+    });
   }
 
   private renderPenaltyDots(
@@ -1826,6 +2071,8 @@ export class SuperpowerShootoutGame {
     const showingKeeperSkills =
       this.gameMode === 'vs_ai'
         ? this.turnRole === 'player_keep'
+        : this.gameMode === 'online_multi'
+        ? this.isHumanControllingKeeper()
         : this.phase !== 'aiming' && this.phase !== 'charging';
 
     const skills = showingKeeperSkills ? KEEPER_SKILLS : KICKER_SKILLS;
@@ -1833,6 +2080,8 @@ export class SuperpowerShootoutGame {
     const currentMana =
       this.gameMode === 'vs_ai'
         ? this.blueMana
+        : this.gameMode === 'online_multi'
+        ? this.net.myRole === 'p1' ? this.blueMana : this.redMana
         : showingKeeperSkills
         ? this.turnRole === 'player_kick'
           ? this.redMana
@@ -1854,17 +2103,19 @@ export class SuperpowerShootoutGame {
       this.skillSlotRects.push({ index: idx, x, y, w: slotW, h: slotH });
 
       const isSelected = activeId === s.id;
-      const canAfford = currentMana >= s.manaCost;
+      const cdRemaining = this.getSkillCooldownRemaining(s.id, showingKeeperSkills);
+      const isCooldown = cdRemaining > 0;
+      const canAfford = currentMana >= s.manaCost && !isCooldown;
 
       ctx.fillStyle = isSelected ? 'rgba(30, 41, 59, 0.96)' : 'rgba(9, 13, 26, 0.88)';
       ctx.fillRect(x, y, slotW, slotH);
 
-      ctx.strokeStyle = isSelected ? s.color : canAfford ? '#475569' : '#1e293b';
+      ctx.strokeStyle = isSelected ? s.color : isCooldown ? '#ef4444' : canAfford ? '#475569' : '#1e293b';
       ctx.lineWidth = isSelected ? 2 : 1;
       ctx.strokeRect(x + 0.5, y + 0.5, slotW - 1, slotH - 1);
 
       // Key badge [1]..[4]
-      ctx.fillStyle = canAfford ? s.color : '#334155';
+      ctx.fillStyle = isCooldown ? '#475569' : canAfford ? s.color : '#334155';
       ctx.fillRect(x + 3, y + 3, 13, 11);
       ctx.font = '700 7px "Press Start 2P", monospace';
       ctx.textAlign = 'center';
@@ -1874,13 +2125,18 @@ export class SuperpowerShootoutGame {
       // Skill Name (Korean)
       ctx.font = '700 9px "Noto Sans KR", sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillStyle = canAfford ? (isSelected ? s.accentColor : '#f8fafc') : '#64748b';
+      ctx.fillStyle = isCooldown ? '#64748b' : canAfford ? (isSelected ? s.accentColor : '#f8fafc') : '#64748b';
       ctx.fillText(s.nameKo, x + 20, y + 12);
 
-      // Mana Cost
+      // Mana Cost or Cooldown badge
       ctx.font = '700 6px "Press Start 2P", monospace';
-      ctx.fillStyle = canAfford ? '#38bdf8' : '#ef4444';
-      ctx.fillText(`MP ${s.manaCost}`, x + 20, y + 22);
+      if (isCooldown) {
+        ctx.fillStyle = '#f87171';
+        ctx.fillText(`CD ${cdRemaining}R`, x + 20, y + 22);
+      } else {
+        ctx.fillStyle = canAfford ? '#38bdf8' : '#ef4444';
+        ctx.fillText(`MP ${s.manaCost}`, x + 20, y + 22);
+      }
 
       if (isSelected) {
         ctx.fillStyle = s.accentColor;
@@ -1994,10 +2250,15 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#38bdf8';
     ctx.fillText(this.onlineRoomInput + (Math.floor(this.elapsedTime * 3) % 2 === 0 ? '_' : ''), VIRTUAL_WIDTH / 2, 110);
 
+    // Mobile helper: tap to change room code
+    ctx.font = '700 7px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#64748b';
+    ctx.fillText('터치하여 코드 변경 (기본: 1004)', VIRTUAL_WIDTH / 2, 129);
+
     // Status Message
     ctx.font = '700 9px "Noto Sans KR", sans-serif';
     ctx.fillStyle = this.net.connected ? '#4ade80' : '#f87171';
-    ctx.fillText(this.net.statusMessage, VIRTUAL_WIDTH / 2, 145);
+    ctx.fillText(this.net.statusMessage, VIRTUAL_WIDTH / 2, 147);
 
     // Connect Button
     ctx.fillStyle = '#1e293b';

@@ -107,7 +107,7 @@ function pxOutlined(
   px(ctx, x, y, w, h, fill);
 }
 
-export type KickerAnimKey = 'idle' | 'charge' | 'runup' | 'kick' | 'celebrate' | 'despair';
+export type KickerAnimKey = 'idle' | 'charge' | 'runup' | 'kick' | 'celebrate' | 'despair' | 'taunt';
 export type KeeperAnimKey =
   | 'idle'
   | 'dive_low_left'
@@ -116,7 +116,8 @@ export type KeeperAnimKey =
   | 'dive_top_right'
   | 'catch_center'
   | 'celebrate'
-  | 'despair';
+  | 'despair'
+  | 'taunt';
 
 export class PixelSpriteBank {
   public kickerBlue: Record<KickerAnimKey, HTMLCanvasElement[]>;
@@ -145,9 +146,10 @@ export class PixelSpriteBank {
     const charge = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'charge', f));
     const runup = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'runup', f));
     const kick = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'kick', f));
-    const celebrate = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'celebrate', f));
+    const celebrate = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'celebrate', f));
     const despair = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'despair', f));
-    return { idle, charge, runup, kick, celebrate, despair };
+    const taunt = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'taunt', f));
+    return { idle, charge, runup, kick, celebrate, despair, taunt };
   }
 
   private drawKickerBackFrame(pal: SpritePalette, anim: KickerAnimKey, frame: number): HTMLCanvasElement {
@@ -162,7 +164,7 @@ export class PixelSpriteBank {
     let torsoTiltX = 0;
     let leftLegY = 0;
     let rightLegY = 0;
-    let leftArmMode: 'down' | 'wide' | 'up' | 'forward' = 'down';
+    let leftArmMode: 'down' | 'wide' | 'up' | 'forward' | 'back' = 'down';
     let rightArmMode: 'down' | 'wide' | 'up' | 'back' = 'down';
     let rightKickStage = -1; // 0: plant, 1: windup, 2: impact, 3: follow-through
     let kneeling = false;
@@ -208,9 +210,16 @@ export class PixelSpriteBank {
         rightArmMode = 'back';
       }
     } else if (anim === 'celebrate') {
-      bobY = frame === 1 ? -6 : -1;
-      leftArmMode = 'up';
-      rightArmMode = 'up';
+      // High jump & arms celebration
+      bobY = frame === 1 || frame === 2 ? -8 : -2;
+      leftArmMode = frame === 2 ? 'wide' : 'up';
+      rightArmMode = frame === 2 ? 'wide' : 'up';
+    } else if (anim === 'taunt') {
+      // SIUU / Dance taunt pose!
+      bobY = frame === 0 ? -9 : frame === 1 ? -4 : 0;
+      torsoTiltX = frame % 2 === 0 ? -2 : 2;
+      leftArmMode = frame >= 2 ? 'back' : 'wide';
+      rightArmMode = frame >= 2 ? 'back' : 'wide';
     } else if (anim === 'despair') {
       kneeling = true;
       bobY = 9;
@@ -307,6 +316,9 @@ export class PixelSpriteBank {
     } else if (leftArmMode === 'forward') {
       pxOutlined(ctx, tx - 17, ty + 1, 5, 9, pal.jerseyDark, pal.outline);
       pxOutlined(ctx, tx - 16, ty - 4, 4, 6, pal.skinDark, pal.outline);
+    } else if (leftArmMode === 'back') {
+      pxOutlined(ctx, tx - 19, ty + 4, 7, 7, pal.jersey, pal.outline);
+      pxOutlined(ctx, tx - 22, ty + 10, 6, 8, pal.skin, pal.outline);
     }
 
     // Right arm
@@ -388,8 +400,9 @@ export class PixelSpriteBank {
       dive_top_left: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, false)),
       dive_top_right: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, true)),
       catch_center: [0, 1].map((f) => this.drawKeeperCatchCenter(pal, f)),
-      celebrate: [0, 1].map((f) => this.drawKeeperReaction(pal, f, true)),
+      celebrate: [0, 1, 2, 3].map((f) => this.drawKeeperReaction(pal, f, true)),
       despair: [0, 1].map((f) => this.drawKeeperReaction(pal, f, false)),
+      taunt: [0, 1, 2, 3].map((f) => this.drawKeeperTaunt(pal, f)),
     };
   }
 
@@ -569,7 +582,7 @@ export class PixelSpriteBank {
   private drawKeeperReaction(pal: SpritePalette, frame: number, win: boolean): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const cx = 32;
-    const ty = win ? (frame === 1 ? 19 : 23) : 31;
+    const ty = win ? (frame % 2 === 1 ? 19 : 23) : 31;
 
     px(ctx, cx - 13, 57, 26, 4, 'rgba(0,0,0,0.35)');
 
@@ -594,6 +607,41 @@ export class PixelSpriteBank {
       this.drawGlove(ctx, pal, cx + 12, 53);
       this.drawKeeperHeadFront(ctx, pal, cx, 26, false);
     }
+    return canvas;
+  }
+
+  private drawKeeperTaunt(pal: SpritePalette, frame: number): HTMLCanvasElement {
+    const [canvas, ctx] = createPixelCanvas(64, 64);
+    const cx = 32;
+    const ty = 22 + (frame % 2 === 0 ? 0 : 2);
+
+    px(ctx, cx - 13, 57, 26, 4, 'rgba(0,0,0,0.35)');
+
+    // Wiggle dance legs
+    const legShift = frame === 0 ? -2 : frame === 2 ? 2 : 0;
+    pxOutlined(ctx, cx - 10 + legShift, ty + 19, 6, 11, pal.socks, pal.outline);
+    pxOutlined(ctx, cx + 4 - legShift, ty + 19, 6, 11, pal.socks, pal.outline);
+    pxOutlined(ctx, cx - 11 + legShift, ty + 29, 7, 4, pal.boots, pal.outline);
+    pxOutlined(ctx, cx + 4 - legShift, ty + 29, 7, 4, pal.boots, pal.outline);
+    pxOutlined(ctx, cx - 9, ty + 13, 18, 7, pal.shorts, pal.outline);
+    pxOutlined(ctx, cx - 9, ty, 18, 14, pal.jersey, pal.outline);
+
+    // Finger wag / Shhh taunt or dancing arms!
+    if (frame % 2 === 0) {
+      // Left arm on hip, right glove pointing finger up!
+      pxOutlined(ctx, cx - 14, ty + 4, 6, 8, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 12, ty + 11);
+      pxOutlined(ctx, cx + 9, ty - 6, 6, 11, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx + 13, ty - 10);
+    } else {
+      // Arms waving side to side
+      pxOutlined(ctx, cx - 15, ty - 2, 6, 9, pal.jersey, pal.outline);
+      pxOutlined(ctx, cx + 9, ty + 4, 6, 9, pal.jersey, pal.outline);
+      this.drawGlove(ctx, pal, cx - 15, ty - 5);
+      this.drawGlove(ctx, pal, cx + 14, ty + 12);
+    }
+
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 12, true);
     return canvas;
   }
 

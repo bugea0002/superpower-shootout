@@ -9,6 +9,7 @@
 html, body {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   background: radial-gradient(circle at center, #14182e 0%, #070812 100%);
   color: #f8fafc;
   font-family: 'Noto Sans KR', sans-serif;
@@ -16,6 +17,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
+  touch-action: none;
 }
 
 #arcade-shell {
@@ -26,13 +28,15 @@ html, body {
   gap: 10px;
   width: 100vw;
   height: 100vh;
-  padding: 12px;
+  height: 100dvh;
+  padding: env(safe-area-inset-top, 8px) env(safe-area-inset-right, 8px) env(safe-area-inset-bottom, 8px) env(safe-area-inset-left, 8px);
 }
 
 #canvas-wrapper {
   position: relative;
   aspect-ratio: 16 / 9;
-  width: min(96vw, calc((100vh - 64px) * 16 / 9));
+  width: min(98vw, calc((100dvh - 54px) * 16 / 9));
+  max-height: calc(100dvh - 54px);
   max-width: 1440px;
   border: 4px solid #38bdf8;
   border-radius: 6px;
@@ -42,6 +46,7 @@ html, body {
     0 18px 48px rgba(0, 0, 0, 0.85);
   background: #05070e;
   overflow: hidden;
+  touch-action: none;
 }
 
 #game-canvas {
@@ -108,4 +113,69 @@ html, body {
   font-family: 'Press Start 2P', monospace;
   font-size: 9px;
   color: #facc15;
+}
+
+.btn-action {
+  background: #1e293b;
+  border: 1px solid #38bdf8;
+  color: #f8fafc;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 999px;
+  transition: all 0.15s ease;
+}
+
+.btn-action:hover, .btn-action:active {
+  background: #0284c7;
+  color: #ffffff;
+}
+
+/* 모바일 가로모드 및 컴팩트 화면 대응 */
+@media (max-height: 480px), (max-width: 640px) {
+  #arcade-shell {
+    gap: 4px;
+    padding: 2px;
+  }
+
+  #canvas-wrapper {
+    width: min(99vw, calc((100dvh - 36px) * 16 / 9));
+    max-height: calc(100dvh - 36px);
+    border-width: 2px;
+    border-radius: 4px;
+  }
+
+  #controls-bar {
+    padding: 3px 10px;
+    font-size: 10px;
+    gap: 8px;
+  }
+
+  .key-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+  }
+}
+
+/* 전체화면 모드 시 */
+:fullscreen #arcade-shell,
+:-webkit-full-screen #arcade-shell {
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
+  justify-content: center;
+}
+
+:fullscreen #canvas-wrapper,
+:-webkit-full-screen #canvas-wrapper {
+  width: min(100vw, calc(100vh * 16 / 9));
+  height: min(100vh, calc(100vw * 9 / 16));
+  max-height: 100vh;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:fullscreen #controls-bar,
+:-webkit-full-screen #controls-bar {
+  display: none;
 }
