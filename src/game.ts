@@ -96,6 +96,7 @@ export class SuperpowerShootoutGame {
   private touchKickButtonRect = { x: 388, y: 172, w: 84, h: 36 };
   private touchSwipeStart: { x: number; y: number; time: number } | null = null;
   private touchSwipeTrail: Array<{ x: number; y: number; alpha: number }> = [];
+  private activeKickTouchId: number | null = null;
 
   // Aim & Power meter
   private aimX = 240;
@@ -283,37 +284,42 @@ export class SuperpowerShootoutGame {
 
     this.canvas.addEventListener('touchmove', (e) => {
       e.preventDefault();
-      if (!e.touches[0]) return;
-      const t = e.touches[0];
-      const pt = this.clientToVirtual(t.clientX, t.clientY);
-      this.mousePos.x = pt.x;
-      this.mousePos.y = pt.y;
+      for (let i = 0; i < e.touches.length; i++) {
+        const t = e.touches[i];
+        // If this touch finger is holding the kick button, ignore it for aiming
+        if (t.identifier === this.activeKickTouchId) {
+          continue;
+        }
 
-      if (this.screen === 'playing') {
-        const humanKicking = this.isHumanControllingKicker();
-        const humanKeeping = this.isHumanControllingKeeper();
+        const pt = this.clientToVirtual(t.clientX, t.clientY);
+        this.mousePos.x = pt.x;
+        this.mousePos.y = pt.y;
 
-        // Mobile touch trail for visual feedback
-        this.touchSwipeTrail.push({ x: pt.x, y: pt.y, alpha: 1.0 });
+        if (this.screen === 'playing') {
+          const humanKicking = this.isHumanControllingKicker();
+          const humanKeeping = this.isHumanControllingKeeper();
 
-        if (humanKicking && (this.phase === 'aiming' || this.phase === 'charging')) {
-          // If dragging around the playing area, smoothly update aim
-          if (pt.y < 210) {
-            this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
-            this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
-          }
-        } else if (humanKeeping && this.touchSwipeStart) {
-          // Swipe detection for keeper dive
-          const dx = pt.x - this.touchSwipeStart.x;
-          const dy = pt.y - this.touchSwipeStart.y;
-          const dist = Math.hypot(dx, dy);
+          // Mobile touch trail for visual feedback
+          this.touchSwipeTrail.push({ x: pt.x, y: pt.y, alpha: 1.0 });
 
-          // If swipe distance threshold reached, trigger dive immediately!
-          if (dist > 22 && !this.keeper.hasDived && (this.phase === 'ball_flight' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'aiming')) {
-            const zone = this.vectorToDiveZone(dx, dy);
-            this.keeperAimZone = zone;
-            this.executeKeeperDive(zone, this.selectedKeeperSkill);
-            this.touchSwipeStart = null; // consume swipe
+          if (humanKicking && (this.phase === 'aiming' || this.phase === 'charging')) {
+            // Dragging aim inside field area
+            if (pt.y < 210) {
+              this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
+              this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
+            }
+          } else if (humanKeeping && this.touchSwipeStart) {
+            // Swipe detection for keeper dive
+            const dx = pt.x - this.touchSwipeStart.x;
+            const dy = pt.y - this.touchSwipeStart.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist > 22 && !this.keeper.hasDived && (this.phase === 'ball_flight' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'aiming')) {
+              const zone = this.vectorToDiveZone(dx, dy);
+              this.keeperAimZone = zone;
+              this.executeKeeperDive(zone, this.selectedKeeperSkill);
+              this.touchSwipeStart = null;
+            }
           }
         }
       }
@@ -332,20 +338,51 @@ export class SuperpowerShootoutGame {
 
     this.canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      const t = e.touches[0];
-      const pt = this.clientToVirtual(t.clientX, t.clientY);
-      this.mousePos.x = pt.x;
-      this.mousePos.y = pt.y;
-      this.touchSwipeStart = { x: pt.x, y: pt.y, time: performance.now() };
-      this.touchSwipeTrail = [{ x: pt.x, y: pt.y, alpha: 1.0 }];
-      this.handlePointerDown(pt.x, pt.y);
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        const pt = this.clientToVirtual(t.clientX, t.clientY);
+
+        // Check if touch is on dedicated Kick Button
+        const btn = this.touchKickButtonRect;
+        const isKickBtnHit =
+          this.screen === 'playing' &&
+          this.isHumanControllingKicker() &&
+          pt.x >= btn.x - 6 && pt.x <= btn.x + btn.w + 6 &&
+          pt.y >= btn.y - 6 && pt.y <= btn.y + btn.h + 6;
+
+        if (isKickBtnHit) {
+          this.activeKickTouchId = t.identifier;
+          this.handleActionPress();
+        } else {
+          // Aim or UI tap
+          this.mousePos.x = pt.x;
+          this.mousePos.y = pt.y;
+          this.touchSwipeStart = { x: pt.x, y: pt.y, time: performance.now() };
+          this.touchSwipeTrail = [{ x: pt.x, y: pt.y, alpha: 1.0 }];
+          this.handlePointerDown(pt.x, pt.y);
+        }
+      }
     }, { passive: false });
 
-    this.canvas.addEventListener('touchend', (e) => {
-      e.preventDefault();
-      this.touchSwipeStart = null;
-      this.handleActionRelease();
-    }, { passive: false });
+    const handleTouchRelease = (e: TouchEvent) => {
+      let shouldReleaseKick = false;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this.activeKickTouchId) {
+          this.activeKickTouchId = null;
+          shouldReleaseKick = true;
+        }
+      }
+      // If the kick finger lifted or if no fingers remain on screen
+      if (shouldReleaseKick || e.touches.length === 0) {
+        this.touchSwipeStart = null;
+        this.activeKickTouchId = null;
+        this.handleActionRelease();
+      }
+    };
+
+    window.addEventListener('touchend', handleTouchRelease, { passive: false });
+    window.addEventListener('touchcancel', handleTouchRelease, { passive: false });
   }
 
   private clientToVirtual(clientX: number, clientY: number): { x: number; y: number } {
@@ -1076,10 +1113,10 @@ export class SuperpowerShootoutGame {
     this.kicker.frame = 2;
     this.hitStopTimer = this.selectedKickerSkill !== 'none' ? 0.075 : 0.04;
 
-    const sweetSpot = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
-    const isUnderpowerRed = this.powerGauge >= 0.58 && this.powerGauge < 0.76;
-    const isOverpowerRed = this.powerGauge > 1.03;
-    const isWeakGray = this.powerGauge < 0.58;
+    const sweetSpot = this.powerGauge >= 0.68 && this.powerGauge <= 0.98;
+    const isUnderpowerRed = this.powerGauge >= 0.50 && this.powerGauge < 0.68;
+    const isOverpowerRed = this.powerGauge > 1.04;
+    const isWeakGray = this.powerGauge < 0.50;
 
     let finalTargetX = this.aimX;
     let finalTargetY = this.aimY;
@@ -1089,17 +1126,17 @@ export class SuperpowerShootoutGame {
     } else if (isWeakGray) {
       // Gray undercharge: slight inaccuracy, but significantly slower flight speed
       finalTargetX += (Math.random() - 0.5) * 12;
-      finalTargetY += (0.58 - this.powerGauge) * 18; // drops lower due to low power
+      finalTargetY += (0.50 - this.powerGauge) * 20; // drops lower due to low power
     } else if (isUnderpowerRed) {
       // Early red zone: high inaccuracy, often misses goal frame!
-      const missSpread = (0.76 - this.powerGauge) * 120 + 25;
+      const missSpread = (0.68 - this.powerGauge) * 130 + 25;
       finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 20);
       finalTargetY += (Math.random() - 0.5) * 35;
     } else if (isOverpowerRed) {
       // Overpower red zone: wild deviation, high risk of skying over bar or wide
-      const missSpread = (this.powerGauge - 1.03) * 160 + 30;
+      const missSpread = (this.powerGauge - 1.04) * 160 + 30;
       finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 25);
-      finalTargetY -= (this.powerGauge - 1.0) * 55 + Math.random() * 20; // skyrockets out!
+      finalTargetY -= (this.powerGauge - 1.04) * 55 + Math.random() * 20; // skyrockets out!
     }
 
     // If Telekinesis Curve is active, initially fake toward opposite side, then snap into aimed corner!
@@ -1345,7 +1382,7 @@ export class SuperpowerShootoutGame {
         break;
 
       case 'charging': {
-        const chargeSpeed = 1.48;
+        const chargeSpeed = 1.28;
         this.powerGauge += this.powerDir * chargeSpeed * dt;
         if (this.powerGauge >= 1.22) {
           this.powerGauge = 1.22;
@@ -1357,7 +1394,7 @@ export class SuperpowerShootoutGame {
 
         // AI releases near sweet spot
         if (this.gameMode === 'vs_ai' && this.turnRole === 'player_keep') {
-          const targetRelease = this.difficulty === 'legend' ? 0.86 : this.difficulty === 'pro' ? 0.82 : 0.72;
+          const targetRelease = this.difficulty === 'legend' ? 0.86 : this.difficulty === 'pro' ? 0.80 : 0.74;
           if (this.powerGauge >= targetRelease) {
             this.beginKickerRunup();
           }
@@ -2234,30 +2271,30 @@ export class SuperpowerShootoutGame {
       ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : this.isTouchDevice ? 'TOUCH & KICK' : 'HOLD SPACE/클릭', gx, gy - 3);
 
       // Meter track zones (Gray -> Early Red -> Sweet Green -> Overpower Red)
-      ctx.fillStyle = '#475569'; // Gray zone (0.0..0.58)
+      ctx.fillStyle = '#475569'; // Gray zone (0.0..0.50)
       ctx.fillRect(gx, gy, gw, gh);
 
-      // Early Red Danger Zone (0.58..0.76 out of 1.22)
-      const earlyRedStart = Math.round((0.58 / 1.22) * gw);
-      const earlyRedWidth = Math.round(((0.76 - 0.58) / 1.22) * gw);
+      // Early Red Danger Zone (0.50..0.68 out of 1.22)
+      const earlyRedStart = Math.round((0.50 / 1.22) * gw);
+      const earlyRedWidth = Math.round(((0.68 - 0.50) / 1.22) * gw);
       ctx.fillStyle = '#dc2626';
       ctx.fillRect(gx + earlyRedStart, gy, earlyRedWidth, gh);
 
-      // Sweet spot green band (0.76..0.94 out of 1.22)
-      const sweetStart = Math.round((0.76 / 1.22) * gw);
-      const sweetWidth = Math.round(((0.94 - 0.76) / 1.22) * gw);
+      // Sweet spot green band (0.68..0.98 out of 1.22)
+      const sweetStart = Math.round((0.68 / 1.22) * gw);
+      const sweetWidth = Math.round(((0.98 - 0.68) / 1.22) * gw);
       ctx.fillStyle = '#16a34a';
       ctx.fillRect(gx + sweetStart, gy, sweetWidth, gh);
 
-      // Late Overpower red band (1.03..1.22)
-      const overStart = Math.round((1.03 / 1.22) * gw);
+      // Late Overpower red band (1.04..1.22)
+      const overStart = Math.round((1.04 / 1.22) * gw);
       ctx.fillStyle = '#dc2626';
       ctx.fillRect(gx + overStart, gy, gw - overStart, gh);
 
       // Current fill
       const fillW = Math.round((this.powerGauge / 1.22) * gw);
-      const isRed = (this.powerGauge >= 0.58 && this.powerGauge < 0.76) || this.powerGauge > 1.03;
-      const isGreen = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
+      const isRed = (this.powerGauge >= 0.50 && this.powerGauge < 0.68) || this.powerGauge > 1.04;
+      const isGreen = this.powerGauge >= 0.68 && this.powerGauge <= 0.98;
       ctx.fillStyle = isGreen ? '#4ade80' : isRed ? '#f87171' : '#94a3b8';
       ctx.fillRect(gx, gy + 3, fillW, gh - 6);
 
