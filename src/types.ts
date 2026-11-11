@@ -3,7 +3,7 @@ export const VIRTUAL_HEIGHT = 270;
 /** Backing-store multiplier: canvas is rendered at 1920x1080 (4x dot density, crisp text). */
 export const RENDER_SCALE = 4;
 
-export type GameMode = 'vs_ai' | 'local_2p' | 'online_multi';
+export type GameMode = 'vs_ai' | 'local_2p' | 'online_multi' | 'career';
 export type AIDifficulty = 'rookie' | 'pro' | 'legend';
 
 export type ScreenState =
@@ -12,7 +12,14 @@ export type ScreenState =
   | 'customization'
   | 'online_lobby'
   | 'playing'
-  | 'match_over';
+  | 'match_over'
+  | 'career_select_position'
+  | 'career_create_profile'
+  | 'career_hub'
+  | 'career_training'
+  | 'career_shop'
+  | 'career_standings'
+  | 'career_event';
 
 export type TurnRole = 'player_kick' | 'player_keep';
 

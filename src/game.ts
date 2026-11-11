@@ -32,6 +32,37 @@ import {
   RENDER_SCALE,
 } from './types';
 import { PixelVFXManager } from './vfx';
+import {
+  CareerSaveData,
+  LeagueTeam,
+  PlayerPosition,
+  CareerStats,
+} from './careerTypes';
+import {
+  loadCareerData,
+  saveCareerData,
+  createInitialCareerSave,
+  getNextOpponent,
+  trainStat,
+  buyAndEquipItem,
+  getTotalPlayerStats,
+  processCareerMatchResult,
+  EQUIPMENT_CATALOG,
+} from './careerData';
+import {
+  renderCareerPositionSelect,
+  renderCareerCreateProfile,
+  renderCareerHub,
+  renderCareerTraining,
+  renderCareerShop,
+  renderCareerStandings,
+  renderCareerStoryEvent,
+  ProfileCreationState,
+} from './careerUI';
+import {
+  getRandomStoryEvent,
+  applyStoryEventOption,
+} from './careerEventsData';
 
 interface SkillSlotRect {
   index: number;
@@ -86,6 +117,30 @@ export class SuperpowerShootoutGame {
   // Active turn skill choices
   private selectedKickerSkill: KickerSkillId = 'none';
   private selectedKeeperSkill: KeeperSkillId = 'none';
+
+  // Career Mode state
+  private careerSave: CareerSaveData | null = null;
+  private careerPosChoice: PlayerPosition = 'striker';
+  private careerHoverPos: PlayerPosition | null = null;
+  private careerProfileState: ProfileCreationState = {
+    playerName: '유망주',
+    teamName: '골목길FC',
+    jerseyNumber: 10,
+    hairStyle: 'spiky',
+    accessory: 'headband',
+    selectedPos: 'striker',
+  };
+  private careerSelectedStatIdx = 0;
+  private careerSelectedEquipIdx = 0;
+  private careerSelectedEventOptionIdx = 0;
+  private careerCurrentOpponent: LeagueTeam | null = null;
+  private careerMatchResultSummary: {
+    won: boolean;
+    goldEarned: number;
+    tpEarned: number;
+    promoted: boolean;
+    champion: boolean;
+  } | null = null;
 
   // Skill cooldown tracking (round number when skill was last used)
   private kickerSkillCooldowns: Map<string, number> = new Map();
@@ -405,15 +460,125 @@ export class SuperpowerShootoutGame {
 
     if (this.screen === 'mode_select') {
       if (code === 'ArrowUp' || code === 'KeyW') {
-        this.menuIndex = (this.menuIndex + 4) % 5;
+        this.menuIndex = (this.menuIndex + 5) % 6;
         this.audio.playUiSelect();
       } else if (code === 'ArrowDown' || code === 'KeyS') {
-        this.menuIndex = (this.menuIndex + 1) % 5;
+        this.menuIndex = (this.menuIndex + 1) % 6;
         this.audio.playUiSelect();
       } else if (code === 'Space' || code === 'Enter') {
         this.selectMenuOption(this.menuIndex);
       } else if (code === 'Escape') {
         this.screen = 'title';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_select_position') {
+      if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'KeyA' || code === 'KeyD') {
+        this.audio.playUiSelect();
+        this.careerPosChoice = this.careerPosChoice === 'striker' ? 'goalkeeper' : 'striker';
+      } else if (code === 'Space' || code === 'Enter') {
+        this.audio.playUiSelect();
+        this.careerProfileState.selectedPos = this.careerPosChoice;
+        this.screen = 'career_create_profile';
+      } else if (code === 'Escape') {
+        this.screen = 'mode_select';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_create_profile') {
+      if (code === 'Space' || code === 'Enter') {
+        this.confirmCareerProfileCreation();
+      } else if (code === 'Escape') {
+        this.screen = 'career_select_position';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_hub') {
+      if (code === 'Digit1') {
+        this.startCareerMatch();
+      } else if (code === 'Digit2') {
+        this.audio.playUiSelect();
+        this.screen = 'career_training';
+      } else if (code === 'Digit3') {
+        this.audio.playUiSelect();
+        this.screen = 'career_shop';
+      } else if (code === 'Digit4') {
+        this.audio.playUiSelect();
+        this.screen = 'career_standings';
+      } else if (code === 'Space' || code === 'Enter') {
+        this.startCareerMatch();
+      } else if (code === 'Escape') {
+        this.screen = 'mode_select';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_training') {
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        this.careerSelectedStatIdx = (this.careerSelectedStatIdx + 4) % 6;
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowDown' || code === 'KeyS') {
+        this.careerSelectedStatIdx = (this.careerSelectedStatIdx + 2) % 6;
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowLeft' || code === 'KeyA') {
+        this.careerSelectedStatIdx = (this.careerSelectedStatIdx + 5) % 6;
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowRight' || code === 'KeyD') {
+        this.careerSelectedStatIdx = (this.careerSelectedStatIdx + 1) % 6;
+        this.audio.playUiSelect();
+      } else if (code === 'Space' || code === 'Enter') {
+        this.handleCareerTrainAction();
+      } else if (code === 'Escape') {
+        this.screen = 'career_hub';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_shop') {
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        this.careerSelectedEquipIdx = Math.max(0, this.careerSelectedEquipIdx - 1);
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowDown' || code === 'KeyS') {
+        this.careerSelectedEquipIdx = this.careerSelectedEquipIdx + 1;
+        this.audio.playUiSelect();
+      } else if (code === 'Space' || code === 'Enter') {
+        this.handleCareerShopAction();
+      } else if (code === 'Escape') {
+        this.screen = 'career_hub';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_standings') {
+      if (code === 'Escape' || code === 'Space' || code === 'Enter') {
+        this.audio.playUiSelect();
+        this.screen = 'career_hub';
+      }
+      return;
+    }
+
+    if (this.screen === 'career_event' && this.careerSave && this.careerSave.pendingEvent) {
+      const opts = this.careerSave.pendingEvent.options;
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        this.careerSelectedEventOptionIdx = (this.careerSelectedEventOptionIdx + opts.length - 1) % opts.length;
+        this.audio.playUiSelect();
+      } else if (code === 'ArrowDown' || code === 'KeyS') {
+        this.careerSelectedEventOptionIdx = (this.careerSelectedEventOptionIdx + 1) % opts.length;
+        this.audio.playUiSelect();
+      } else if (code === 'Digit1' && opts.length >= 1) {
+        this.careerSelectedEventOptionIdx = 0;
+        this.confirmCareerStoryEventChoice();
+      } else if (code === 'Digit2' && opts.length >= 2) {
+        this.careerSelectedEventOptionIdx = 1;
+        this.confirmCareerStoryEventChoice();
+      } else if (code === 'Digit3' && opts.length >= 3) {
+        this.careerSelectedEventOptionIdx = 2;
+        this.confirmCareerStoryEventChoice();
+      } else if (code === 'Space' || code === 'Enter') {
+        this.confirmCareerStoryEventChoice();
       }
       return;
     }
@@ -450,13 +615,17 @@ export class SuperpowerShootoutGame {
     if (this.screen === 'match_over') {
       if (code === 'Space' || code === 'Enter') {
         this.audio.playUiSelect();
+        if (this.gameMode === 'career') {
+          this.advanceCareerWeekAndTriggerEvent();
+          return;
+        }
         if (this.gameMode === 'online_multi') {
           this.net.sendEvent({ type: 'restart_match' });
         }
         this.startNewMatch();
       } else if (code === 'Escape') {
         this.audio.stopBgm();
-        this.screen = 'mode_select';
+        this.screen = this.gameMode === 'career' ? 'career_hub' : 'mode_select';
       }
       return;
     }
@@ -515,13 +684,68 @@ export class SuperpowerShootoutGame {
     }
 
     if (this.screen === 'mode_select') {
-      for (let i = 0; i < 5; i++) {
-        const btnY = 82 + i * 28;
-        if (vx >= 110 && vx <= 370 && vy >= btnY && vy <= btnY + 24) {
+      for (let i = 0; i < 6; i++) {
+        const btnY = 74 + i * 27;
+        if (vx >= 100 && vx <= 380 && vy >= btnY && vy <= btnY + 23) {
           this.selectMenuOption(i);
           return;
         }
       }
+      return;
+    }
+
+    if (this.screen === 'career_select_position') {
+      // Striker Card (x: 50..230, y: 52..238)
+      if (vx >= 50 && vx <= 230 && vy >= 52 && vy <= 238) {
+        this.audio.playUiSelect();
+        this.careerPosChoice = 'striker';
+        return;
+      }
+      // Keeper Card (x: 250..430, y: 52..238)
+      if (vx >= 250 && vx <= 430 && vy >= 52 && vy <= 238) {
+        this.audio.playUiSelect();
+        this.careerPosChoice = 'goalkeeper';
+        return;
+      }
+      // Confirm Button at bottom (x: 110..370, y: 246..266)
+      if (vx >= 110 && vx <= 370 && vy >= 246 && vy <= 266) {
+        this.audio.playUiSelect();
+        this.careerProfileState.selectedPos = this.careerPosChoice;
+        this.screen = 'career_create_profile';
+        return;
+      }
+      return;
+    }
+
+    if (this.screen === 'career_create_profile') {
+      this.handleCareerProfileClick(vx, vy);
+      return;
+    }
+
+    if (this.screen === 'career_hub') {
+      this.handleCareerHubClick(vx, vy);
+      return;
+    }
+
+    if (this.screen === 'career_training') {
+      this.handleCareerTrainingClick(vx, vy);
+      return;
+    }
+
+    if (this.screen === 'career_shop') {
+      this.handleCareerShopClick(vx, vy);
+      return;
+    }
+
+    if (this.screen === 'career_standings') {
+      // Bottom return or screen click
+      this.audio.playUiSelect();
+      this.screen = 'career_hub';
+      return;
+    }
+
+    if (this.screen === 'career_event' && this.careerSave && this.careerSave.pendingEvent) {
+      this.handleCareerEventClick(vx, vy);
       return;
     }
 
@@ -560,6 +784,10 @@ export class SuperpowerShootoutGame {
 
     if (this.screen === 'match_over') {
       this.audio.playUiSelect();
+      if (this.gameMode === 'career') {
+        this.advanceCareerWeekAndTriggerEvent();
+        return;
+      }
       if (this.gameMode === 'online_multi') {
         this.net.sendEvent({ type: 'restart_match' });
       }
@@ -666,18 +894,29 @@ export class SuperpowerShootoutGame {
   private selectMenuOption(idx: number): void {
     this.audio.playUiSelect();
     if (idx === 0) {
+      // 🏆 Career Mode: Road to Champion
+      this.gameMode = 'career';
+      const saved = loadCareerData();
+      if (saved) {
+        this.careerSave = saved;
+        this.screen = 'career_hub';
+      } else {
+        this.careerPosChoice = 'striker';
+        this.screen = 'career_select_position';
+      }
+    } else if (idx === 1) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'rookie';
       this.screen = 'customization';
-    } else if (idx === 1) {
+    } else if (idx === 2) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'pro';
       this.screen = 'customization';
-    } else if (idx === 2) {
+    } else if (idx === 3) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'legend';
       this.screen = 'customization';
-    } else if (idx === 3) {
+    } else if (idx === 4) {
       this.gameMode = 'local_2p';
       this.difficulty = 'pro';
       this.screen = 'customization';
@@ -693,6 +932,11 @@ export class SuperpowerShootoutGame {
       const isP1Turn = this.turnRole === 'player_kick';
       return (isP1Turn && this.net.myRole === 'p1') || (!isP1Turn && this.net.myRole === 'p2');
     }
+    if (this.gameMode === 'career') {
+      // Striker career: Human kicks in player_kick turn!
+      // Keeper career: AI teammate kicks in player_kick turn!
+      return this.careerSave?.position === 'striker' && this.turnRole === 'player_kick';
+    }
     return this.turnRole === 'player_kick';
   }
 
@@ -701,6 +945,11 @@ export class SuperpowerShootoutGame {
     if (this.gameMode === 'online_multi') {
       const isP1Keeper = this.turnRole === 'player_keep';
       return (isP1Keeper && this.net.myRole === 'p1') || (!isP1Keeper && this.net.myRole === 'p2');
+    }
+    if (this.gameMode === 'career') {
+      // Keeper career: Human dives in player_keep turn!
+      // Striker career: AI teammate keeper dives in player_keep turn!
+      return this.careerSave?.position === 'goalkeeper' && this.turnRole === 'player_keep';
     }
     return this.turnRole === 'player_keep';
   }
@@ -938,6 +1187,303 @@ export class SuperpowerShootoutGame {
     this.setupTurn();
   }
 
+  // =========================================================================
+  // CAREER MODE SYSTEMS & HANDLERS
+  // =========================================================================
+  private startCareerMatch(): void {
+    if (!this.careerSave) return;
+    this.careerCurrentOpponent = getNextOpponent(this.careerSave);
+    const totalStats = getTotalPlayerStats(this.careerSave);
+
+    // Apply player's custom appearance
+    this.sprites.rebuildCustomSprites(
+      this.careerSave.jerseyNumber,
+      this.careerSave.hairStyle,
+      this.careerSave.accessory
+    );
+
+    this.gameMode = 'career';
+    this.screen = 'playing';
+    this.round = 1;
+    this.isSuddenDeath = false;
+    this.turnRole = 'player_kick';
+    this.blueHistory = [];
+    this.redHistory = [];
+    this.blueScore = 0;
+    this.redScore = 0;
+    this.blueMana = totalStats.maxMana;
+    if (this.careerSave.activeBuff?.type === 'start_mana') {
+      this.blueMana = Math.min(totalStats.maxMana + 50, this.blueMana + this.careerSave.activeBuff.value);
+    }
+    this.redMana = 70;
+    this.winnerText = '';
+    this.kickerSkillCooldowns.clear();
+    this.keeperSkillCooldowns.clear();
+    this.careerMatchResultSummary = null;
+
+    this.audio.startBgm(false);
+    this.setupTurn();
+  }
+
+  private confirmCareerProfileCreation(): void {
+    this.audio.playUiSelect();
+    this.careerSave = createInitialCareerSave(
+      this.careerProfileState.playerName,
+      this.careerProfileState.teamName,
+      this.careerProfileState.selectedPos,
+      this.careerProfileState.hairStyle,
+      this.careerProfileState.accessory,
+      this.careerProfileState.jerseyNumber
+    );
+    saveCareerData(this.careerSave);
+    this.screen = 'career_hub';
+  }
+
+  private handleCareerProfileClick(vx: number, vy: number): void {
+    const hairList: HairStyleId[] = ['spiky', 'dread', 'bowl', 'curly', 'bald'];
+    const accList: AccessoryId[] = ['none', 'headband', 'glasses', 'mask', 'aura_crown'];
+
+    // 1. Jersey number decrement/increment (y: 110..128)
+    if (vx >= 240 && vx <= 320 && vy >= 110 && vy <= 128) {
+      this.audio.playUiSelect();
+      this.careerProfileState.jerseyNumber = (this.careerProfileState.jerseyNumber % 99) + 1;
+      return;
+    }
+
+    // 2. Hair style cycler (y: 134..152)
+    if (vx >= 240 && vx <= 340 && vy >= 134 && vy <= 152) {
+      this.audio.playUiSelect();
+      const curIdx = hairList.indexOf(this.careerProfileState.hairStyle);
+      this.careerProfileState.hairStyle = hairList[(curIdx + 1) % hairList.length];
+      return;
+    }
+
+    // 3. Accessory cycler (y: 158..176)
+    if (vx >= 240 && vx <= 340 && vy >= 158 && vy <= 176) {
+      this.audio.playUiSelect();
+      const curIdx = accList.indexOf(this.careerProfileState.accessory);
+      this.careerProfileState.accessory = accList[(curIdx + 1) % accList.length];
+      return;
+    }
+
+    // 4. Sign contract button (x: 196..428, y: 202..224)
+    if (vx >= 196 && vx <= 428 && vy >= 202 && vy <= 224) {
+      this.confirmCareerProfileCreation();
+      return;
+    }
+  }
+
+  private handleCareerHubClick(vx: number, vy: number): void {
+    if (vy >= 224 && vy <= 250) {
+      // 1. Match Start button (x: 12..162)
+      if (vx >= 12 && vx <= 162) {
+        this.audio.playUiSelect();
+        this.startCareerMatch();
+        return;
+      }
+      // 2. Training Facility button (x: 168..264)
+      if (vx >= 168 && vx <= 264) {
+        this.audio.playUiSelect();
+        this.screen = 'career_training';
+        return;
+      }
+      // 3. Pro Gear Shop button (x: 270..366)
+      if (vx >= 270 && vx <= 366) {
+        this.audio.playUiSelect();
+        this.screen = 'career_shop';
+        return;
+      }
+      // 4. Standings table button (x: 372..468)
+      if (vx >= 372 && vx <= 468) {
+        this.audio.playUiSelect();
+        this.screen = 'career_standings';
+        return;
+      }
+    }
+  }
+
+  private handleCareerTrainingClick(vx: number, vy: number): void {
+    // Check click on 6 stat cards
+    for (let i = 0; i < 6; i++) {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cardX = 16 + col * 228;
+      const cardY = 46 + row * 56;
+      if (vx >= cardX && vx <= cardX + 220 && vy >= cardY && vy <= cardY + 50) {
+        this.careerSelectedStatIdx = i;
+        this.handleCareerTrainAction();
+        return;
+      }
+    }
+
+    // Bottom return button (y: 230..258)
+    if (vy >= 230 && vy <= 258) {
+      this.audio.playUiSelect();
+      this.screen = 'career_hub';
+      return;
+    }
+  }
+
+  private handleCareerShopClick(vx: number, vy: number): void {
+    if (!this.careerSave) return;
+    const filteredGear = EQUIPMENT_CATALOG.filter(
+      (g) => g.position === 'all' || g.position === this.careerSave!.position
+    );
+
+    // Left catalog item click (x: 20..272, y: 50 + i * 28)
+    for (let i = 0; i < filteredGear.length; i++) {
+      const rowY = 50 + i * 28;
+      if (vx >= 20 && vx <= 272 && vy >= rowY && vy <= rowY + 24) {
+        this.audio.playUiSelect();
+        this.careerSelectedEquipIdx = i;
+        return;
+      }
+    }
+
+    // Right buy/equip button click (x: 294..454, y: 194..216)
+    if (vx >= 294 && vx <= 454 && vy >= 194 && vy <= 216) {
+      this.handleCareerShopAction();
+      return;
+    }
+
+    // Bottom return button (y: 232..258)
+    if (vy >= 232 && vy <= 258) {
+      this.audio.playUiSelect();
+      this.screen = 'career_hub';
+      return;
+    }
+  }
+
+  private handleCareerTrainAction(): void {
+    if (!this.careerSave) return;
+    const isStriker = this.careerSave.position === 'striker';
+    const statKeys: Array<keyof CareerStats> = isStriker
+      ? ['power', 'curve', 'sweetSpot', 'focus', 'maxMana', 'manaRegen']
+      : ['agility', 'reach', 'composure', 'anticipation', 'maxMana', 'manaRegen'];
+
+    const targetKey = statKeys[this.careerSelectedStatIdx];
+    if (!targetKey) return;
+
+    const result = trainStat(this.careerSave, targetKey);
+    if (result.success) {
+      this.audio.playSkillEffect('titan');
+      saveCareerData(this.careerSave);
+      this.vfx.showBanner('TRAINING SUCCESS!', result.message, '#38bdf8', '#0f172a', 1.0);
+    } else {
+      this.audio.playPostHit();
+      this.vfx.showBanner('TRAINING FAILED!', result.message, '#ef4444', '#0f172a', 1.0);
+    }
+  }
+
+  private handleCareerShopAction(): void {
+    if (!this.careerSave) return;
+    const filteredGear = EQUIPMENT_CATALOG.filter(
+      (g) => g.position === 'all' || g.position === this.careerSave!.position
+    );
+    const targetGear = filteredGear[this.careerSelectedEquipIdx];
+    if (!targetGear) return;
+
+    const result = buyAndEquipItem(this.careerSave, targetGear.id);
+    if (result.success) {
+      this.audio.playGoalSwishAndCheer();
+      saveCareerData(this.careerSave);
+      this.vfx.showBanner('GEAR EQUIPPED!', result.message, '#c084fc', '#0f172a', 1.2);
+    } else {
+      this.audio.playPostHit();
+      this.vfx.showBanner('CANNOT BUY!', result.message, '#ef4444', '#0f172a', 1.0);
+    }
+  }
+
+  private advanceCareerWeekAndTriggerEvent(): void {
+    if (!this.careerSave) {
+      this.screen = 'mode_select';
+      return;
+    }
+
+    // 1. Advance calendar week (1..34)
+    this.careerSave.currentWeek = Math.min(34, this.careerSave.currentWeek + 1);
+
+    // 2. Consume active buff match count
+    if (this.careerSave.activeBuff) {
+      this.careerSave.activeBuff.matchesLeft--;
+      if (this.careerSave.activeBuff.matchesLeft <= 0) {
+        this.careerSave.activeBuff = null;
+      }
+    }
+
+    // 3. Roll for Story Event (100% trigger between matches)
+    const evt = getRandomStoryEvent(this.careerSave);
+    this.careerSave.pendingEvent = evt;
+    this.careerSelectedEventOptionIdx = 0;
+    saveCareerData(this.careerSave);
+
+    this.audio.playTauntFanfare();
+    this.screen = 'career_event';
+  }
+
+  private confirmCareerStoryEventChoice(): void {
+    if (!this.careerSave || !this.careerSave.pendingEvent) {
+      this.screen = 'career_hub';
+      return;
+    }
+
+    const opts = this.careerSave.pendingEvent.options;
+    const selectedOpt = opts[this.careerSelectedEventOptionIdx] ?? opts[0];
+    if (selectedOpt) {
+      const outcome = applyStoryEventOption(this.careerSave, selectedOpt);
+      this.careerSave.pendingEvent = null;
+      saveCareerData(this.careerSave);
+
+      this.audio.playGoalSwishAndCheer();
+      this.vfx.showBanner('EVENT RESOLVED!', outcome.messageKo, '#facc15', '#0f172a', 1.8);
+    }
+
+    this.screen = 'career_hub';
+  }
+
+  private handleCareerEventClick(vx: number, vy: number): void {
+    if (!this.careerSave || !this.careerSave.pendingEvent) return;
+    const event = this.careerSave.pendingEvent;
+
+    if (event.type === 'smartphone') {
+      for (let i = 0; i < event.options.length; i++) {
+        const optY = 122 + i * 36;
+        if (vx >= 126 && vx <= 348 && vy >= optY && vy <= optY + 32) {
+          this.careerSelectedEventOptionIdx = i;
+          this.confirmCareerStoryEventChoice();
+          return;
+        }
+      }
+    } else if (event.type === 'press_conference') {
+      for (let i = 0; i < event.options.length; i++) {
+        const optY = 190 + i * 24;
+        if (vx >= 20 && vx <= 460 && vy >= optY && vy <= optY + 22) {
+          this.careerSelectedEventOptionIdx = i;
+          this.confirmCareerStoryEventChoice();
+          return;
+        }
+      }
+    } else if (event.type === 'newspaper') {
+      for (let i = 0; i < event.options.length; i++) {
+        const optY = 164 + i * 29;
+        if (vx >= 54 && vx <= 414 && vy >= optY && vy <= optY + 25) {
+          this.careerSelectedEventOptionIdx = i;
+          this.confirmCareerStoryEventChoice();
+          return;
+        }
+      }
+    } else {
+      for (let i = 0; i < event.options.length; i++) {
+        const optY = 186 + i * 25;
+        if (vx >= 30 && vx <= 450 && vy >= optY && vy <= optY + 22) {
+          this.careerSelectedEventOptionIdx = i;
+          this.confirmCareerStoryEventChoice();
+          return;
+        }
+      }
+    }
+  }
+
   private resetTurnActors(): void {
     this.kicker = {
       x: 220,
@@ -1120,8 +1666,31 @@ export class SuperpowerShootoutGame {
     this.kicker.frame = 2;
     this.hitStopTimer = this.selectedKickerSkill !== 'none' ? 0.075 : 0.04;
 
-    const sweetSpot = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
-    const isUnderpowerRed = this.powerGauge >= 0.58 && this.powerGauge < 0.76;
+    let sweetMin = 0.76;
+    let sweetMax = 0.94;
+    let powerBonusSpeed = 1.0;
+
+    if (this.gameMode === 'career' && this.careerSave) {
+      const stats = getTotalPlayerStats(this.careerSave);
+      if (this.careerSave.position === 'striker' && this.turnRole === 'player_kick') {
+        // Striker sweetspot width expansion (up to +0.06 on each side)
+        let sweetExpand = Math.min(0.06, (stats.sweetSpot - 30) * 0.001);
+        if (this.careerSave.activeBuff?.type === 'sweetspot') {
+          sweetExpand += this.careerSave.activeBuff.value * 0.001;
+        }
+        sweetMin -= sweetExpand;
+        sweetMax += sweetExpand;
+        // Shot speed bonus from power stat (e.g. power 70 -> +20% speed)
+        let powerBonus = (stats.power - 30) * 0.004;
+        if (this.careerSave.activeBuff?.type === 'power') {
+          powerBonus += this.careerSave.activeBuff.value * 0.003;
+        }
+        powerBonusSpeed = 1 + powerBonus;
+      }
+    }
+
+    const sweetSpot = this.powerGauge >= sweetMin && this.powerGauge <= sweetMax;
+    const isUnderpowerRed = this.powerGauge >= 0.58 && this.powerGauge < sweetMin;
     const isOverpowerRed = this.powerGauge > 1.03;
     const isWeakGray = this.powerGauge < 0.58;
 
@@ -1167,7 +1736,7 @@ export class SuperpowerShootoutGame {
     this.ball.startY = this.penaltySpot.y;
     this.ball.targetX = finalTargetX;
     this.ball.targetY = finalTargetY;
-    this.ball.speed = baseSpeed * skillSpeedMult;
+    this.ball.speed = baseSpeed * skillSpeedMult * powerBonusSpeed;
     this.ball.power = this.powerGauge;
     this.ball.perfectImpact = sweetSpot;
     this.ball.curveOffset = curveDelta;
@@ -1595,6 +2164,19 @@ export class SuperpowerShootoutGame {
     let saveRadiusX = 25 * this.keeper.scale;
     let saveRadiusY = 22 * this.keeper.scale;
 
+    // Career Mode Keeper Reach bonus
+    if (this.gameMode === 'career' && this.careerSave) {
+      const stats = getTotalPlayerStats(this.careerSave);
+      if (this.careerSave.position === 'goalkeeper' && this.turnRole === 'player_keep') {
+        let reachBonus = 1 + (stats.reach - 30) * 0.005; // Expands glove reach up to +35%
+        if (this.careerSave.activeBuff?.type === 'reach') {
+          reachBonus += this.careerSave.activeBuff.value * 0.005;
+        }
+        saveRadiusX *= reachBonus;
+        saveRadiusY *= reachBonus;
+      }
+    }
+
     if (this.reflexBonus) {
       saveRadiusX *= 1.28;
       saveRadiusY *= 1.25;
@@ -1716,6 +2298,9 @@ export class SuperpowerShootoutGame {
     // Reward kicker bonus mana
     if (this.turnRole === 'player_kick') {
       this.blueMana = Math.min(this.maxMana, this.blueMana + 15);
+      if (this.gameMode === 'career' && this.careerSave) {
+        this.careerSave.careerGoals++;
+      }
     } else {
       this.redMana = Math.min(this.maxMana, this.redMana + 15);
     }
@@ -1752,6 +2337,9 @@ export class SuperpowerShootoutGame {
     // Reward keeper bonus mana
     if (this.turnRole === 'player_keep') {
       this.blueMana = Math.min(this.maxMana, this.blueMana + 18);
+      if (this.gameMode === 'career' && this.careerSave) {
+        this.careerSave.careerSaves++;
+      }
     } else {
       this.redMana = Math.min(this.maxMana, this.redMana + 18);
     }
@@ -1914,7 +2502,21 @@ export class SuperpowerShootoutGame {
       this.audio.playGoalSwishAndCheer();
     }
 
-    if (this.gameMode === 'local_2p') {
+    if (this.gameMode === 'career' && this.careerSave) {
+      const oppId = this.careerCurrentOpponent?.id ?? 'opp';
+      const result = processCareerMatchResult(this.careerSave, this.blueScore, this.redScore, oppId);
+      saveCareerData(this.careerSave);
+      this.careerMatchResultSummary = result;
+      if (result.champion) {
+        this.winnerText = `👑 WORLD CHAMPION! 세계 최강 등극!`;
+      } else if (result.promoted) {
+        this.winnerText = `🏆 DIV PROMOTED! (+${result.goldEarned}G / +${result.tpEarned}TP)`;
+      } else {
+        this.winnerText = blueWon
+          ? `VICTORY! (+${result.goldEarned}G / +${result.tpEarned}TP)`
+          : `DEFEAT... (+${result.goldEarned}G / +${result.tpEarned}TP)`;
+      }
+    } else if (this.gameMode === 'local_2p') {
       this.winnerText = blueWon ? 'PLAYER 1 WINS!!' : 'PLAYER 2 WINS!!';
     } else if (this.gameMode === 'online_multi') {
       this.winnerText = isWinner ? 'VICTORY!! 경기 승리!' : 'DEFEAT... 아쉬운 패배!';
@@ -1931,6 +2533,43 @@ export class SuperpowerShootoutGame {
     ctx.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.save();
+
+    // Standalone Career Mode Screens (Render full pixel canvas and exit)
+    if (this.screen === 'career_select_position') {
+      renderCareerPositionSelect(ctx, this.careerPosChoice, this.careerHoverPos, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_create_profile') {
+      renderCareerCreateProfile(ctx, this.careerProfileState, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_hub' && this.careerSave) {
+      renderCareerHub(ctx, this.careerSave, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_training' && this.careerSave) {
+      renderCareerTraining(ctx, this.careerSave, this.careerSelectedStatIdx, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_shop' && this.careerSave) {
+      renderCareerShop(ctx, this.careerSave, this.careerSelectedEquipIdx, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_standings' && this.careerSave) {
+      renderCareerStandings(ctx, this.careerSave, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
+    if (this.screen === 'career_event' && this.careerSave && this.careerSave.pendingEvent) {
+      renderCareerStoryEvent(ctx, this.careerSave, this.careerSelectedEventOptionIdx, this.elapsedTime);
+      ctx.restore();
+      return;
+    }
 
     const [shakeX, shakeY] = this.vfx.getShakeOffset();
     ctx.translate(shakeX, shakeY);
@@ -2201,7 +2840,11 @@ export class SuperpowerShootoutGame {
     const isP1Human = this.gameMode === 'online_multi' ? this.net.myRole === 'p1' : true;
     const p1RoleTag = this.turnRole === 'player_kick' ? '[KICK]' : '[KEEP]';
     const p1Label =
-      this.gameMode === 'local_2p'
+      this.gameMode === 'career' && this.careerSave
+        ? this.careerSave.position === 'striker'
+          ? (this.turnRole === 'player_kick' ? `[KICK] ${this.careerSave.playerName.slice(0, 4)}` : '[AI GK] TEAM')
+          : (this.turnRole === 'player_keep' ? `[KEEP] ${this.careerSave.playerName.slice(0, 4)}` : '[AI ST] TEAM')
+        : this.gameMode === 'local_2p'
         ? `P1 ${p1RoleTag}`
         : this.gameMode === 'online_multi'
         ? this.net.myRole === 'p1' ? `YOU ${p1RoleTag}` : `P1 ${p1RoleTag}`
@@ -2245,7 +2888,9 @@ export class SuperpowerShootoutGame {
     // Red Team (Right)
     const p2RoleTag = this.turnRole === 'player_kick' ? '[KEEP]' : '[KICK]';
     const p2Label =
-      this.gameMode === 'local_2p'
+      this.gameMode === 'career' && this.careerCurrentOpponent
+        ? `${p2RoleTag} ${this.careerCurrentOpponent.shortName}`
+        : this.gameMode === 'local_2p'
         ? `${p2RoleTag} P2`
         : this.gameMode === 'online_multi'
         ? this.net.myRole === 'p2' ? `${p2RoleTag} YOU` : `${p2RoleTag} P2`
@@ -2256,6 +2901,20 @@ export class SuperpowerShootoutGame {
     ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#ffffff';
     ctx.fillText(p2Label, VIRTUAL_WIDTH - 48, 19);
+
+    // Active Match Buff banner in Career Mode
+    if (this.gameMode === 'career' && this.careerSave?.activeBuff) {
+      const buff = this.careerSave.activeBuff;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      ctx.fillRect(140, 38, 200, 12);
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(140.5, 38.5, 199, 11);
+      ctx.font = '700 7px "Galmuri11", "DungGeunMo", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#facc15';
+      ctx.fillText(`★ ${buff.nameKo} (${buff.matchesLeft}경기 남음)`, 240, 47);
+    }
 
     // Mana Bars under each team
     this.renderManaBar(ctx, 12, 25, 168, 7, this.blueMana, '#38bdf8');
@@ -2904,6 +3563,7 @@ export class SuperpowerShootoutGame {
     ctx.fillText('AI 대결, 로컬 2인용 또는 온라인 룸 배틀을 선택하세요', VIRTUAL_WIDTH / 2, 66);
 
     const options = [
+      { title: '🏆 [CAREER] ROAD TO CHAMPION', sub: '슈터/키퍼를 골라 밑바닥 리그에서 전설로!', color: '#fbbf24' },
       { title: '1P VS AI - ROOKIE', sub: '입문자용 AI 골키퍼 & 키커', color: '#4ade80' },
       { title: '1P VS AI - PRO', sub: '표준 아케이드 밸런스 대결', color: '#38bdf8' },
       { title: '1P VS AI - LEGEND', sub: '초반응 초능력 마스터 AI에 도전!', color: '#f43f5e' },
@@ -2912,22 +3572,22 @@ export class SuperpowerShootoutGame {
     ];
 
     options.forEach((opt, i) => {
-      const y = 82 + i * 28;
+      const y = 74 + i * 27;
       const selected = this.menuIndex === i;
 
       ctx.fillStyle = selected ? 'rgba(30, 41, 59, 0.96)' : 'rgba(15, 23, 42, 0.85)';
-      ctx.fillRect(110, y, 260, 24);
+      ctx.fillRect(100, y, 280, 23);
       ctx.strokeStyle = selected ? opt.color : '#334155';
       ctx.lineWidth = selected ? 2 : 1;
-      ctx.strokeRect(110.5, y + 0.5, 259, 23);
+      ctx.strokeRect(100.5, y + 0.5, 279, 22);
 
       ctx.font = '700 8px "Press Start 2P", monospace';
       ctx.fillStyle = selected ? opt.color : '#f8fafc';
       ctx.fillText((selected ? '> ' : '') + opt.title, VIRTUAL_WIDTH / 2, y + 10);
 
-      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillText(opt.sub, VIRTUAL_WIDTH / 2, y + 20);
+      ctx.font = '700 7.5px "Galmuri11", "DungGeunMo", monospace';
+      ctx.fillStyle = selected ? '#fde047' : '#94a3b8';
+      ctx.fillText(opt.sub, VIRTUAL_WIDTH / 2, y + 19);
     });
   }
 
