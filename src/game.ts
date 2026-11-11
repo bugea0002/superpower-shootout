@@ -9,7 +9,7 @@ import {
   KICKER_SKILLS,
   zoneToGoalCoords,
 } from './skills';
-import { KeeperAnimKey, KickerAnimKey, PixelSpriteBank } from './sprites';
+import { KeeperAnimKey, KickerAnimKey, PixelSpriteBank, logicalSize } from './sprites';
 import {
   AIDifficulty,
   BallState,
@@ -22,10 +22,14 @@ import {
   KickerSkillId,
   ScreenState,
   ShotResult,
+  PlayerCustomization,
+  HairStyleId,
+  AccessoryId,
   TurnPhase,
   TurnRole,
   VIRTUAL_HEIGHT,
   VIRTUAL_WIDTH,
+  RENDER_SCALE,
 } from './types';
 import { PixelVFXManager } from './vfx';
 
@@ -89,7 +93,7 @@ export class SuperpowerShootoutGame {
 
   // Mobile touch controls (Method A: touch aim + kick button + swipe dive)
   private isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-  private touchKickButtonRect = { x: 378, y: 168, w: 90, h: 32 };
+  private touchKickButtonRect = { x: 388, y: 172, w: 84, h: 36 };
   private touchSwipeStart: { x: number; y: number; time: number } | null = null;
   private touchSwipeTrail: Array<{ x: number; y: number; alpha: number }> = [];
 
@@ -128,12 +132,30 @@ export class SuperpowerShootoutGame {
   private slowMoFactor = 1;
   private slowMoTimer = 0;
 
+  // Player Loadout & Customization
+  private customPlayer: PlayerCustomization = {
+    jerseyNumber: 10,
+    hairStyle: 'spiky',
+    accessory: 'headband',
+    selectedKickerSkills: ['flame', 'curve'],
+    selectedKeeperSkills: ['titan', 'icewall'],
+  };
+
+  // In-game pause & help dialog
+  private isPaused = false;
+  private showHelpModal = false;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+    // 4x backing store (1920x1080) for fine dots & crisp text; game logic stays in 480x270 units
+    canvas.width = VIRTUAL_WIDTH * RENDER_SCALE;
+    canvas.height = VIRTUAL_HEIGHT * RENDER_SCALE;
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
 
     this.sprites = new PixelSpriteBank();
+    // Re-rasterize sprites once pixel fonts finish loading (jersey numbers use canvas text)
+    document.fonts?.ready.then(() => this.rebuildPlayerSprites());
     this.vfx = new PixelVFXManager();
     this.audio = new RetroAudioEngine();
     this.net = new MultiplayerClient();
@@ -182,6 +204,9 @@ export class SuperpowerShootoutGame {
         const skill = event.skill as KeeperSkillId;
         this.reflexBonus = event.reflexBonus;
         this.executeKeeperDive(zone, skill);
+      } else if (event.type === 'restart_match') {
+        // Opponent requested rematch
+        this.startNewMatch();
       }
     };
 
@@ -356,6 +381,15 @@ export class SuperpowerShootoutGame {
       return;
     }
 
+    if (this.screen === 'customization') {
+      if (code === 'Space' || code === 'Enter') {
+        this.confirmCustomizationAndProceed();
+      } else if (code === 'Escape') {
+        this.screen = 'mode_select';
+      }
+      return;
+    }
+
     if (this.screen === 'online_lobby') {
       if (code === 'Backspace') {
         this.onlineRoomInput = this.onlineRoomInput.slice(0, -1);
@@ -379,6 +413,9 @@ export class SuperpowerShootoutGame {
     if (this.screen === 'match_over') {
       if (code === 'Space' || code === 'Enter') {
         this.audio.playUiSelect();
+        if (this.gameMode === 'online_multi') {
+          this.net.sendEvent({ type: 'restart_match' });
+        }
         this.startNewMatch();
       } else if (code === 'Escape') {
         this.audio.stopBgm();
@@ -389,6 +426,32 @@ export class SuperpowerShootoutGame {
 
     // In-game controls
     if (this.screen === 'playing') {
+      if (code === 'KeyH') {
+        this.audio.playUiSelect();
+        this.showHelpModal = !this.showHelpModal;
+        return;
+      }
+
+      if (code === 'Escape') {
+        if (this.showHelpModal) {
+          this.audio.playUiSelect();
+          this.showHelpModal = false;
+          return;
+        }
+        this.audio.playUiSelect();
+        this.isPaused = !this.isPaused;
+        return;
+      }
+
+      if (this.isPaused || this.showHelpModal) {
+        if (code === 'Space' || code === 'Enter') {
+          this.audio.playUiSelect();
+          this.isPaused = false;
+          this.showHelpModal = false;
+        }
+        return;
+      }
+
       // Skill keys 1..4 (or Q,W,E,R)
       const skillSlotMap: Record<string, number> = {
         Digit1: 0, KeyQ: 0,
@@ -425,6 +488,11 @@ export class SuperpowerShootoutGame {
       return;
     }
 
+    if (this.screen === 'customization') {
+      this.handleCustomizationClick(vx, vy);
+      return;
+    }
+
     if (this.screen === 'online_lobby') {
       // Room code box click (prompts mobile keyboard or quick code input)
       if (vx >= 160 && vx <= 320 && vy >= 85 && vy <= 125) {
@@ -455,11 +523,64 @@ export class SuperpowerShootoutGame {
 
     if (this.screen === 'match_over') {
       this.audio.playUiSelect();
+      if (this.gameMode === 'online_multi') {
+        this.net.sendEvent({ type: 'restart_match' });
+      }
       this.startNewMatch();
       return;
     }
 
     if (this.screen === 'playing') {
+      // If help modal is open, clicking closes it
+      if (this.showHelpModal) {
+        this.audio.playUiSelect();
+        this.showHelpModal = false;
+        return;
+      }
+
+      // If paused, check buttons: Resume, Retry, Main Menu
+      if (this.isPaused) {
+        // Button 1: [RESUME (계속하기)] (140, 95, 200, 26)
+        if (vx >= 140 && vx <= 340 && vy >= 95 && vy <= 121) {
+          this.audio.playUiSelect();
+          this.isPaused = false;
+          return;
+        }
+
+        // Button 2: [RETRY (다시하기)] (140, 130, 200, 26)
+        if (vx >= 140 && vx <= 340 && vy >= 130 && vy <= 156) {
+          this.audio.playUiSelect();
+          this.isPaused = false;
+          if (this.gameMode === 'online_multi') {
+            this.net.sendEvent({ type: 'restart_match' });
+          }
+          this.startNewMatch();
+          return;
+        }
+
+        // Button 3: [MAIN MENU (메인으로)] (140, 165, 200, 26)
+        if (vx >= 140 && vx <= 340 && vy >= 165 && vy <= 191) {
+          this.audio.playUiSelect();
+          this.isPaused = false;
+          if (this.gameMode === 'online_multi') {
+            this.net.disconnect();
+          }
+          this.audio.stopBgm();
+          this.screen = 'mode_select';
+          return;
+        }
+
+        // Outside click does not accidentally unpause
+        return;
+      }
+
+      // [?] Help Button click at top-left (8, 6, 20, 20)
+      if (vx >= 8 && vx <= 28 && vy >= 6 && vy <= 26) {
+        this.audio.playUiSelect();
+        this.showHelpModal = true;
+        return;
+      }
+
       // Check skill slot clicks at bottom bar
       for (const slot of this.skillSlotRects) {
         if (vx >= slot.x && vx <= slot.x + slot.w && vy >= slot.y && vy <= slot.y + slot.h) {
@@ -510,22 +631,22 @@ export class SuperpowerShootoutGame {
     if (idx === 0) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'rookie';
-      this.startNewMatch();
+      this.screen = 'customization';
     } else if (idx === 1) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'pro';
-      this.startNewMatch();
+      this.screen = 'customization';
     } else if (idx === 2) {
       this.gameMode = 'vs_ai';
       this.difficulty = 'legend';
-      this.startNewMatch();
+      this.screen = 'customization';
     } else if (idx === 3) {
       this.gameMode = 'local_2p';
       this.difficulty = 'pro';
-      this.startNewMatch();
+      this.screen = 'customization';
     } else {
       this.gameMode = 'online_multi';
-      this.screen = 'online_lobby';
+      this.screen = 'customization';
     }
   }
 
@@ -581,7 +702,8 @@ export class SuperpowerShootoutGame {
   private tryToggleSkillSlot(slotIndex: number): void {
     if (this.gameMode === 'vs_ai') {
       if (this.turnRole === 'player_kick' && this.phase === 'aiming') {
-        const skill = KICKER_SKILLS[slotIndex];
+        const skills = this.getActiveKickerSkills();
+        const skill = skills[slotIndex];
         if (!skill) return;
         if (this.selectedKickerSkill === skill.id) {
           this.selectedKickerSkill = 'none';
@@ -605,7 +727,8 @@ export class SuperpowerShootoutGame {
         this.turnRole === 'player_keep' &&
         (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived))
       ) {
-        const skill = KEEPER_SKILLS[slotIndex];
+        const skills = this.getActiveKeeperSkills();
+        const skill = skills[slotIndex];
         if (!skill) return;
         if (this.selectedKeeperSkill === skill.id) {
           this.selectedKeeperSkill = 'none';
@@ -627,7 +750,8 @@ export class SuperpowerShootoutGame {
     } else if (this.gameMode === 'online_multi') {
       const myMana = this.net.myRole === 'p1' ? this.blueMana : this.redMana;
       if (this.isHumanControllingKicker() && this.phase === 'aiming') {
-        const skill = KICKER_SKILLS[slotIndex];
+        const skills = this.getActiveKickerSkills();
+        const skill = skills[slotIndex];
         if (!skill) return;
         if (this.selectedKickerSkill === skill.id) {
           this.selectedKickerSkill = 'none';
@@ -651,7 +775,8 @@ export class SuperpowerShootoutGame {
         this.isHumanControllingKeeper() &&
         (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || (this.phase === 'ball_flight' && !this.keeper.hasDived))
       ) {
-        const skill = KEEPER_SKILLS[slotIndex];
+        const skills = this.getActiveKeeperSkills();
+        const skill = skills[slotIndex];
         if (!skill) return;
         if (this.selectedKeeperSkill === skill.id) {
           this.selectedKeeperSkill = 'none';
@@ -952,18 +1077,29 @@ export class SuperpowerShootoutGame {
     this.hitStopTimer = this.selectedKickerSkill !== 'none' ? 0.075 : 0.04;
 
     const sweetSpot = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
-    const overpower = this.powerGauge > 1.03;
+    const isUnderpowerRed = this.powerGauge >= 0.58 && this.powerGauge < 0.76;
+    const isOverpowerRed = this.powerGauge > 1.03;
+    const isWeakGray = this.powerGauge < 0.58;
 
     let finalTargetX = this.aimX;
     let finalTargetY = this.aimY;
 
-    if (!sweetSpot) {
-      // Overpower has slight lift, underpower has slight drop, but keep within reasonable play
-      const inaccuracy = overpower ? (this.powerGauge - 1.0) * 45 : (1 - this.powerGauge) * 8;
-      finalTargetX += (Math.random() - 0.5) * inaccuracy;
-      if (overpower) {
-        finalTargetY -= (this.powerGauge - 1.0) * 32; // Slight skyrocket risk only when severely overcharged
-      }
+    if (sweetSpot) {
+      // Pinpoint accurate shot straight into aimed spot!
+    } else if (isWeakGray) {
+      // Gray undercharge: slight inaccuracy, but significantly slower flight speed
+      finalTargetX += (Math.random() - 0.5) * 12;
+      finalTargetY += (0.58 - this.powerGauge) * 18; // drops lower due to low power
+    } else if (isUnderpowerRed) {
+      // Early red zone: high inaccuracy, often misses goal frame!
+      const missSpread = (0.76 - this.powerGauge) * 120 + 25;
+      finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 20);
+      finalTargetY += (Math.random() - 0.5) * 35;
+    } else if (isOverpowerRed) {
+      // Overpower red zone: wild deviation, high risk of skying over bar or wide
+      const missSpread = (this.powerGauge - 1.03) * 160 + 30;
+      finalTargetX += (Math.random() < 0.5 ? -1 : 1) * (missSpread + Math.random() * 25);
+      finalTargetY -= (this.powerGauge - 1.0) * 55 + Math.random() * 20; // skyrockets out!
     }
 
     // If Telekinesis Curve is active, initially fake toward opposite side, then snap into aimed corner!
@@ -977,7 +1113,9 @@ export class SuperpowerShootoutGame {
       finalTargetX = fakeStartTargetX;
     }
 
-    const baseSpeed = 1.35 + this.powerGauge * 0.72;
+    const baseSpeed = isWeakGray
+      ? 0.72 + this.powerGauge * 0.55 // Slow float in gray zone
+      : 1.45 + this.powerGauge * 0.75;
     const skillSpeedMult = this.selectedKickerSkill === 'flame' ? 1.38 : 1.0;
 
     this.ball.z = 0;
@@ -1148,6 +1286,10 @@ export class SuperpowerShootoutGame {
       this.hitStopTimer -= rawDt;
       this.vfx.update(rawDt * 0.25);
       return;
+    }
+
+    if (this.isPaused) {
+      return; // Freeze game updates while paused
     }
 
     if (this.slowMoTimer > 0) {
@@ -1717,12 +1859,21 @@ export class SuperpowerShootoutGame {
   private finishMatch(blueWon: boolean): void {
     this.screen = 'match_over';
     this.audio.playWhistle(true);
-    if (blueWon) {
+
+    const isWinner =
+      this.gameMode === 'online_multi'
+        ? (blueWon && this.net.myRole === 'p1') || (!blueWon && this.net.myRole === 'p2')
+        : blueWon;
+
+    if (isWinner) {
       this.vfx.spawnConfetti();
       this.audio.playGoalSwishAndCheer();
     }
+
     if (this.gameMode === 'local_2p') {
       this.winnerText = blueWon ? 'PLAYER 1 WINS!!' : 'PLAYER 2 WINS!!';
+    } else if (this.gameMode === 'online_multi') {
+      this.winnerText = isWinner ? 'VICTORY!! 경기 승리!' : 'DEFEAT... 아쉬운 패배!';
     } else {
       this.winnerText = blueWon ? 'VICTORY!! 챔피언 등극!' : 'DEFEAT... 재도전하세요!';
     }
@@ -1733,13 +1884,15 @@ export class SuperpowerShootoutGame {
   // =========================================================================
   private render(): void {
     const ctx = this.ctx;
+    ctx.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
+    ctx.imageSmoothingEnabled = false;
     ctx.save();
 
     const [shakeX, shakeY] = this.vfx.getShakeOffset();
     ctx.translate(shakeX, shakeY);
 
     // 1. Stadium Pixel Backdrop + Animated Crowd Wave
-    ctx.drawImage(this.sprites.stadiumBackdrop, 0, 0);
+    ctx.drawImage(this.sprites.stadiumBackdrop, 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
     this.renderAnimatedCrowdHighlights(ctx);
 
     // 2.Scorch marks on turf
@@ -1751,7 +1904,8 @@ export class SuperpowerShootoutGame {
     // 4. Ice Barrier Crystal (if active)
     if (this.keeper.iceWallZone) {
       const wp = zoneToGoalCoords(this.keeper.iceWallZone, this.goal);
-      ctx.drawImage(this.sprites.iceBarrierSprite, Math.round(wp.x - 28), Math.round(wp.y - 24));
+      const [iw, ih] = logicalSize(this.sprites.iceBarrierSprite);
+      ctx.drawImage(this.sprites.iceBarrierSprite, Math.round(wp.x - 28), Math.round(wp.y - 24), iw, ih);
     }
 
     // 5. Black Hole Vortex behind/around Keeper
@@ -1783,13 +1937,24 @@ export class SuperpowerShootoutGame {
       this.renderTitleOverlay(ctx);
     } else if (this.screen === 'mode_select') {
       this.renderModeSelectOverlay(ctx);
+    } else if (this.screen === 'customization') {
+      this.renderCustomizationOverlay(ctx);
     } else if (this.screen === 'online_lobby') {
       this.renderOnlineLobbyOverlay(ctx);
     } else if (this.screen === 'playing') {
       this.renderMatchHUD(ctx);
+      if (this.isPaused) {
+        this.renderPauseOverlay(ctx);
+      }
+      if (this.showHelpModal) {
+        this.renderHelpModal(ctx);
+      }
     } else if (this.screen === 'match_over') {
       this.renderMatchHUD(ctx);
       this.renderMatchOverOverlay(ctx);
+      if (this.showHelpModal) {
+        this.renderHelpModal(ctx);
+      }
     }
   }
 
@@ -1897,7 +2062,8 @@ export class SuperpowerShootoutGame {
       ctx.fill();
     }
 
-    ctx.drawImage(img, dx, dy);
+    const [kw, kh] = logicalSize(img);
+    ctx.drawImage(img, dx, dy, kw, kh);
   }
 
   private renderSoccerBallAndClones(ctx: CanvasRenderingContext2D): void {
@@ -1989,21 +2155,33 @@ export class SuperpowerShootoutGame {
 
     // Blue Team (Left)
     const isP1Human = this.gameMode === 'online_multi' ? this.net.myRole === 'p1' : true;
-    const p1RoleTag = this.turnRole === 'player_kick' ? '⚽' : '🧤';
+    const p1RoleTag = this.turnRole === 'player_kick' ? '[KICK]' : '[KEEP]';
     const p1Label =
       this.gameMode === 'local_2p'
         ? `P1 ${p1RoleTag}`
         : this.gameMode === 'online_multi'
         ? this.net.myRole === 'p1' ? `YOU ${p1RoleTag}` : `P1 ${p1RoleTag}`
         : `YOU ${p1RoleTag}`;
+
+    // Top-left [?] Help Icon button
+    ctx.fillStyle = this.showHelpModal ? '#38bdf8' : '#1e293b';
+    ctx.fillRect(11, 10, 14, 12);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(11.5, 10.5, 13, 11);
+    ctx.font = '700 8px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = this.showHelpModal ? '#0f172a' : '#facc15';
+    ctx.fillText('?', 18, 19);
+
     ctx.fillStyle = '#2563eb';
-    ctx.fillRect(12, 10, 64, 12);
-    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
+    ctx.fillRect(28, 10, 56, 12);
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(p1Label, 44, 19);
+    ctx.fillText(p1Label, 56, 19);
 
-    this.renderPenaltyDots(ctx, 80, 12, this.blueHistory, true);
+    this.renderPenaltyDots(ctx, 88, 12, this.blueHistory, true);
 
     // Center Score & Round
     ctx.fillStyle = '#0f172a';
@@ -2021,19 +2199,19 @@ export class SuperpowerShootoutGame {
     ctx.fillText(this.isSuddenDeath ? 'SUDDEN DEATH' : `ROUND ${Math.min(5, this.round)}/5`, 240, 30);
 
     // Red Team (Right)
-    const p2RoleTag = this.turnRole === 'player_kick' ? '🧤' : '⚽';
+    const p2RoleTag = this.turnRole === 'player_kick' ? '[KEEP]' : '[KICK]';
     const p2Label =
       this.gameMode === 'local_2p'
         ? `${p2RoleTag} P2`
         : this.gameMode === 'online_multi'
         ? this.net.myRole === 'p2' ? `${p2RoleTag} YOU` : `${p2RoleTag} P2`
         : `${p2RoleTag} AI`;
-    this.renderPenaltyDots(ctx, 282, 12, this.redHistory, false);
+    this.renderPenaltyDots(ctx, 276, 12, this.redHistory, false);
     ctx.fillStyle = '#dc2626';
-    ctx.fillRect(VIRTUAL_WIDTH - 76, 10, 64, 12);
-    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
+    ctx.fillRect(VIRTUAL_WIDTH - 84, 10, 72, 12);
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(p2Label, VIRTUAL_WIDTH - 44, 19);
+    ctx.fillText(p2Label, VIRTUAL_WIDTH - 48, 19);
 
     // Mana Bars under each team
     this.renderManaBar(ctx, 12, 25, 168, 7, this.blueMana, '#38bdf8');
@@ -2041,9 +2219,10 @@ export class SuperpowerShootoutGame {
 
     // ---------------- POWER / TIMING GAUGE (When Kicker Charging or Aiming) ----------------
     if (this.isHumanControllingKicker() && (this.phase === 'aiming' || this.phase === 'charging')) {
-      const gx = 352;
-      const gy = 178;
-      const gw = 114;
+      // In touch devices, place the gauge in the upper center so user thumb on [KICK] doesn't obscure it!
+      const gx = this.isTouchDevice ? 170 : 352;
+      const gy = this.isTouchDevice ? 44 : 178;
+      const gw = this.isTouchDevice ? 140 : 114;
       const gh = 13;
 
       ctx.fillStyle = 'rgba(9, 13, 26, 0.9)';
@@ -2054,49 +2233,64 @@ export class SuperpowerShootoutGame {
       ctx.fillStyle = '#facc15';
       ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : this.isTouchDevice ? 'TOUCH & KICK' : 'HOLD SPACE/클릭', gx, gy - 3);
 
-      // Meter track zones
-      ctx.fillStyle = '#334155';
+      // Meter track zones (Gray -> Early Red -> Sweet Green -> Overpower Red)
+      ctx.fillStyle = '#475569'; // Gray zone (0.0..0.58)
       ctx.fillRect(gx, gy, gw, gh);
+
+      // Early Red Danger Zone (0.58..0.76 out of 1.22)
+      const earlyRedStart = Math.round((0.58 / 1.22) * gw);
+      const earlyRedWidth = Math.round(((0.76 - 0.58) / 1.22) * gw);
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(gx + earlyRedStart, gy, earlyRedWidth, gh);
+
       // Sweet spot green band (0.76..0.94 out of 1.22)
       const sweetStart = Math.round((0.76 / 1.22) * gw);
       const sweetWidth = Math.round(((0.94 - 0.76) / 1.22) * gw);
       ctx.fillStyle = '#16a34a';
       ctx.fillRect(gx + sweetStart, gy, sweetWidth, gh);
-      // Overpower red band (1.03..1.22)
+
+      // Late Overpower red band (1.03..1.22)
       const overStart = Math.round((1.03 / 1.22) * gw);
       ctx.fillStyle = '#dc2626';
       ctx.fillRect(gx + overStart, gy, gw - overStart, gh);
 
       // Current fill
       const fillW = Math.round((this.powerGauge / 1.22) * gw);
-      ctx.fillStyle = this.powerGauge > 1.03 ? '#f87171' : this.powerGauge >= 0.76 && this.powerGauge <= 0.94 ? '#4ade80' : '#facc15';
+      const isRed = (this.powerGauge >= 0.58 && this.powerGauge < 0.76) || this.powerGauge > 1.03;
+      const isGreen = this.powerGauge >= 0.76 && this.powerGauge <= 0.94;
+      ctx.fillStyle = isGreen ? '#4ade80' : isRed ? '#f87171' : '#94a3b8';
       ctx.fillRect(gx, gy + 3, fillW, gh - 6);
 
       // Marker needle
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(gx + fillW - 1, gy - 1, 3, gh + 2);
 
-      // If mobile touch device, render dedicated [⚽ KICK] button below or next to gauge
+      // If mobile touch device, render dedicated [KICK] button at bottom right (far away from top gauge)
       if (this.isTouchDevice) {
         const btn = this.touchKickButtonRect;
         const isCharging = this.phase === 'charging';
-        ctx.fillStyle = isCharging ? '#0284c7' : 'rgba(15, 23, 42, 0.92)';
+        ctx.fillStyle = isCharging ? '#0284c7' : '#0f172a';
         ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
-        ctx.strokeStyle = isCharging ? '#38bdf8' : '#facc15';
-        ctx.lineWidth = isCharging ? 2 : 1.5;
-        ctx.strokeRect(btn.x + 0.5, btn.y + 0.5, btn.w - 1, btn.h - 1);
 
-        ctx.font = '700 9px "Noto Sans KR", sans-serif';
+        // 3D Pixel Bevel frame
+        ctx.fillStyle = isCharging ? '#7dd3fc' : '#475569';
+        ctx.fillRect(btn.x, btn.y, btn.w, 2);
+        ctx.fillRect(btn.x, btn.y, 2, btn.h);
+        ctx.fillStyle = isCharging ? '#0369a1' : '#020617';
+        ctx.fillRect(btn.x, btn.y + btn.h - 2, btn.w, 2);
+        ctx.fillRect(btn.x + btn.w - 2, btn.y, 2, btn.h);
+
+        ctx.font = '700 9px "Galmuri11", "DungGeunMo", monospace';
         ctx.textAlign = 'center';
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(isCharging ? '떼면 슛!' : '⚽ 꾹 눌러 슛', btn.x + btn.w / 2, btn.y + 20);
+        ctx.fillStyle = isCharging ? '#facc15' : '#ffffff';
+        ctx.fillText(isCharging ? '떼면 슛!' : '꾹 눌러 슛', btn.x + btn.w / 2, btn.y + 22);
       }
     } else if (this.isHumanControllingKeeper() && !this.keeper.hasDived && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
       if (this.isTouchDevice) {
         // Subtle hint for mobile swipe
         ctx.fillStyle = 'rgba(9, 13, 26, 0.75)';
         ctx.fillRect(324, 172, 146, 20);
-        ctx.font = '700 8px "Noto Sans KR", sans-serif';
+        ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#4ade80';
         ctx.fillText('방향으로 슥 드래그/스와이프!', 397, 185);
@@ -2104,7 +2298,7 @@ export class SuperpowerShootoutGame {
         // Minimal subtle indicator on PC
         ctx.fillStyle = 'rgba(9, 13, 26, 0.65)';
         ctx.fillRect(344, 175, 126, 17);
-        ctx.font = '700 7px "Noto Sans KR", sans-serif';
+        ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#38bdf8';
         ctx.fillText('WASD: 방향  SPACE: 다이빙', 407, 187);
@@ -2191,6 +2385,20 @@ export class SuperpowerShootoutGame {
     ctx.fillText(`MP ${Math.round(mana)}`, x + 4, y + 6);
   }
 
+  private getActiveKickerSkills(): typeof KICKER_SKILLS {
+    if (this.gameMode === 'local_2p') {
+      return KICKER_SKILLS;
+    }
+    return KICKER_SKILLS.filter((s) => this.customPlayer.selectedKickerSkills.includes(s.id));
+  }
+
+  private getActiveKeeperSkills(): typeof KEEPER_SKILLS {
+    if (this.gameMode === 'local_2p') {
+      return KEEPER_SKILLS;
+    }
+    return KEEPER_SKILLS.filter((s) => this.customPlayer.selectedKeeperSkills.includes(s.id));
+  }
+
   private renderSkillBar(ctx: CanvasRenderingContext2D): void {
     const showingKeeperSkills =
       this.gameMode === 'vs_ai'
@@ -2199,7 +2407,7 @@ export class SuperpowerShootoutGame {
         ? this.isHumanControllingKeeper()
         : this.phase !== 'aiming' && this.phase !== 'charging';
 
-    const skills = showingKeeperSkills ? KEEPER_SKILLS : KICKER_SKILLS;
+    const skills = showingKeeperSkills ? this.getActiveKeeperSkills() : this.getActiveKickerSkills();
     const activeId = showingKeeperSkills ? this.selectedKeeperSkill : this.selectedKickerSkill;
     const currentMana =
       this.gameMode === 'vs_ai'
@@ -2247,7 +2455,7 @@ export class SuperpowerShootoutGame {
       ctx.fillText(s.key, x + 9.5, y + 11);
 
       // Skill Name (Korean)
-      ctx.font = '700 9px "Noto Sans KR", sans-serif';
+      ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
       ctx.textAlign = 'left';
       ctx.fillStyle = isCooldown ? '#64748b' : canAfford ? (isSelected ? s.accentColor : '#f8fafc') : '#64748b';
       ctx.fillText(s.nameKo, x + 20, y + 12);
@@ -2296,9 +2504,9 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#38bdf8';
     ctx.fillText('SHOOTOUT', VIRTUAL_WIDTH / 2, 92);
 
-    ctx.font = '900 11px "Noto Sans KR", sans-serif';
+    ctx.font = '700 9px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#f8fafc';
-    ctx.fillText('⚡ 도트 그래픽 이능력 승부차기 배틀 ⚡', VIRTUAL_WIDTH / 2, 115);
+    ctx.fillText('* 도트 그래픽 이능력 승부차기 배틀 *', VIRTUAL_WIDTH / 2, 115);
 
     if (Math.floor(this.elapsedTime * 2.5) % 2 === 0) {
       ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
@@ -2307,6 +2515,335 @@ export class SuperpowerShootoutGame {
       ctx.fillStyle = '#4ade80';
       ctx.fillText('PRESS SPACE / CLICK', VIRTUAL_WIDTH / 2, 214);
     }
+  }
+
+  private confirmCustomizationAndProceed(): void {
+    this.audio.playUiSelect();
+    this.sprites.rebuildCustomSprites(
+      this.customPlayer.jerseyNumber,
+      this.customPlayer.hairStyle,
+      this.customPlayer.accessory
+    );
+
+    if (this.gameMode === 'online_multi') {
+      this.screen = 'online_lobby';
+    } else {
+      this.startNewMatch();
+    }
+  }
+
+  private rebuildPlayerSprites(): void {
+    this.sprites.rebuildCustomSprites(
+      this.customPlayer.jerseyNumber,
+      this.customPlayer.hairStyle,
+      this.customPlayer.accessory
+    );
+  }
+
+  private handleCustomizationClick(vx: number, vy: number): void {
+    const before = JSON.stringify(this.customPlayer);
+    this.handleCustomizationClickInner(vx, vy);
+    // Any look change → re-rasterize so the LIVE PREVIEW updates instantly
+    if (this.screen === 'customization' && JSON.stringify(this.customPlayer) !== before) {
+      this.rebuildPlayerSprites();
+    }
+  }
+
+  private handleCustomizationClickInner(vx: number, vy: number): void {
+    const hairList: HairStyleId[] = ['spiky', 'dread', 'bowl', 'curly', 'bald'];
+    const accList: AccessoryId[] = ['none', 'headband', 'glasses', 'mask', 'aura_crown'];
+
+    // 1. Back Number decrement / increment (left: 20..38, y: 56..74; right: 88..106, y: 56..74)
+    if (vx >= 22 && vx <= 42 && vy >= 56 && vy <= 74) {
+      this.audio.playUiSelect();
+      this.customPlayer.jerseyNumber = this.customPlayer.jerseyNumber <= 1 ? 99 : this.customPlayer.jerseyNumber - 1;
+      return;
+    }
+    if (vx >= 86 && vx <= 106 && vy >= 56 && vy <= 74) {
+      this.audio.playUiSelect();
+      this.customPlayer.jerseyNumber = this.customPlayer.jerseyNumber >= 99 ? 1 : this.customPlayer.jerseyNumber + 1;
+      return;
+    }
+
+    // 2. Hair styles (Row 1, y: 92..112)
+    hairList.forEach((h, i) => {
+      const bx = 22 + i * 42;
+      if (vx >= bx && vx <= bx + 38 && vy >= 92 && vy <= 112) {
+        this.audio.playUiSelect();
+        this.customPlayer.hairStyle = h;
+      }
+    });
+
+    // 3. Accessories (Row 2, y: 130..150)
+    accList.forEach((a, i) => {
+      const bx = 22 + i * 42;
+      if (vx >= bx && vx <= bx + 38 && vy >= 130 && vy <= 150) {
+        this.audio.playUiSelect();
+        this.customPlayer.accessory = a;
+      }
+    });
+
+    // 4. Kicker Skills (2 slots selection, y: 172..192)
+    KICKER_SKILLS.forEach((s, i) => {
+      const bx = 22 + i * 54;
+      if (vx >= bx && vx <= bx + 50 && vy >= 172 && vy <= 192) {
+        this.audio.playSkillToggle();
+        const cur = [...this.customPlayer.selectedKickerSkills];
+        if (cur.includes(s.id)) {
+          // toggle off only if we have at least 1 remaining
+          if (cur.length > 1) {
+            this.customPlayer.selectedKickerSkills = [cur.find((id) => id !== s.id)!] as any;
+          }
+        } else {
+          if (cur.length >= 2) {
+            // Replace the oldest
+            this.customPlayer.selectedKickerSkills = [cur[1], s.id];
+          } else {
+            this.customPlayer.selectedKickerSkills.push(s.id);
+          }
+        }
+      }
+    });
+
+    // 5. Keeper Skills (2 slots selection, y: 212..232)
+    KEEPER_SKILLS.forEach((s, i) => {
+      const bx = 22 + i * 54;
+      if (vx >= bx && vx <= bx + 50 && vy >= 212 && vy <= 232) {
+        this.audio.playSkillToggle();
+        const cur = [...this.customPlayer.selectedKeeperSkills];
+        if (cur.includes(s.id)) {
+          if (cur.length > 1) {
+            this.customPlayer.selectedKeeperSkills = [cur.find((id) => id !== s.id)!] as any;
+          }
+        } else {
+          if (cur.length >= 2) {
+            this.customPlayer.selectedKeeperSkills = [cur[1], s.id];
+          } else {
+            this.customPlayer.selectedKeeperSkills.push(s.id);
+          }
+        }
+      }
+    });
+
+    // 6. Confirm / Start Button (bottom center: 280..450, y: 236..260)
+    if (vx >= 270 && vx <= 455 && vy >= 236 && vy <= 262) {
+      this.confirmCustomizationAndProceed();
+      return;
+    }
+
+    // 7. Back Button (22..82, y: 240..260)
+    if (vx >= 22 && vx <= 92 && vy >= 238 && vy <= 260) {
+      this.audio.playUiSelect();
+      this.screen = 'mode_select';
+      return;
+    }
+  }
+
+  private renderCustomizationOverlay(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.94)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    // Header Title
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(16, 8, VIRTUAL_WIDTH - 32, 26);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(16.5, 8.5, VIRTUAL_WIDTH - 33, 25);
+
+    ctx.font = '900 11px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('CUSTOMIZE & LOADOUT (선수 세팅)', VIRTUAL_WIDTH / 2, 24);
+
+    // Left Panel: Settings (x: 16 ~ 260)
+    // Section 1: 등번호 (Jersey Number)
+    ctx.textAlign = 'left';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('1. 등번호 (NO.)', 22, 48);
+
+    // Number Stepper: [-] [ 10 ] [+]
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(22, 56, 20, 18);
+    ctx.fillRect(44, 56, 40, 18);
+    ctx.fillRect(86, 56, 20, 18);
+    ctx.strokeStyle = '#475569';
+    ctx.strokeRect(22.5, 56.5, 19, 17);
+    ctx.strokeRect(44.5, 56.5, 39, 17);
+    ctx.strokeRect(86.5, 56.5, 19, 17);
+
+    ctx.textAlign = 'center';
+    ctx.font = '700 10px "Press Start 2P", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('-', 32, 69);
+    ctx.fillStyle = '#facc15';
+    ctx.fillText(this.customPlayer.jerseyNumber.toString(), 64, 70);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('+', 96, 69);
+
+    // Section 2: 머리스타일 (Hair Style)
+    ctx.textAlign = 'left';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('2. 헤어스타일 (HAIR)', 22, 86);
+
+    const hairList: { id: HairStyleId; label: string }[] = [
+      { id: 'spiky', label: '스파이크' },
+      { id: 'dread', label: '드레드' },
+      { id: 'bowl', label: '바가지' },
+      { id: 'curly', label: '웨이브' },
+      { id: 'bald', label: '스킨헤드' },
+    ];
+    hairList.forEach((h, i) => {
+      const bx = 22 + i * 42;
+      const isSel = this.customPlayer.hairStyle === h.id;
+      ctx.fillStyle = isSel ? '#2563eb' : '#1e293b';
+      ctx.fillRect(bx, 92, 38, 20);
+      ctx.strokeStyle = isSel ? '#facc15' : '#475569';
+      ctx.lineWidth = isSel ? 1.5 : 1;
+      ctx.strokeRect(bx + 0.5, 92.5, 37, 19);
+
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = isSel ? '#ffffff' : '#94a3b8';
+      ctx.fillText(h.label, bx + 19, 105);
+    });
+
+    // Section 3: 악세사리 (Accessory)
+    ctx.textAlign = 'left';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('3. 악세사리 (ITEM)', 22, 124);
+
+    const accList: { id: AccessoryId; label: string }[] = [
+      { id: 'none', label: '없음' },
+      { id: 'headband', label: '헤드밴드' },
+      { id: 'glasses', label: '고글' },
+      { id: 'mask', label: '마스크' },
+      { id: 'aura_crown', label: '황금관' },
+    ];
+    accList.forEach((a, i) => {
+      const bx = 22 + i * 42;
+      const isSel = this.customPlayer.accessory === a.id;
+      ctx.fillStyle = isSel ? '#2563eb' : '#1e293b';
+      ctx.fillRect(bx, 130, 38, 20);
+      ctx.strokeStyle = isSel ? '#facc15' : '#475569';
+      ctx.lineWidth = isSel ? 1.5 : 1;
+      ctx.strokeRect(bx + 0.5, 130.5, 37, 19);
+
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = isSel ? '#ffffff' : '#94a3b8';
+      ctx.fillText(a.label, bx + 19, 143);
+    });
+
+    // Section 4: 슛 스킬 선택 (2개)
+    ctx.textAlign = 'left';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#f97316';
+    ctx.fillText('4. 키커 스킬 (2개 장착)', 22, 166);
+
+    KICKER_SKILLS.forEach((s, i) => {
+      const bx = 22 + i * 54;
+      const isSel = this.customPlayer.selectedKickerSkills.includes(s.id);
+      ctx.fillStyle = isSel ? 'rgba(249, 115, 22, 0.35)' : '#1e293b';
+      ctx.fillRect(bx, 172, 50, 20);
+      ctx.strokeStyle = isSel ? s.color : '#475569';
+      ctx.lineWidth = isSel ? 2 : 1;
+      ctx.strokeRect(bx + 0.5, 172.5, 49, 19);
+
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = isSel ? s.accentColor : '#94a3b8';
+      ctx.fillText(s.nameKo.slice(0, 5), bx + 25, 184);
+    });
+
+    // Section 5: 키퍼 스킬 선택 (2개)
+    ctx.textAlign = 'left';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#22c55e';
+    ctx.fillText('5. 골키퍼 스킬 (2개 장착)', 22, 206);
+
+    KEEPER_SKILLS.forEach((s, i) => {
+      const bx = 22 + i * 54;
+      const isSel = this.customPlayer.selectedKeeperSkills.includes(s.id);
+      ctx.fillStyle = isSel ? 'rgba(34, 197, 94, 0.35)' : '#1e293b';
+      ctx.fillRect(bx, 212, 50, 20);
+      ctx.strokeStyle = isSel ? s.color : '#475569';
+      ctx.lineWidth = isSel ? 2 : 1;
+      ctx.strokeRect(bx + 0.5, 212.5, 49, 19);
+
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = isSel ? s.accentColor : '#94a3b8';
+      ctx.fillText(s.nameKo.slice(0, 5), bx + 25, 224);
+    });
+
+    // Right Panel: Live Preview Card (x: 260 ~ 460)
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(260, 42, 202, 186);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(260.5, 42.5, 201, 185);
+
+    ctx.textAlign = 'center';
+    ctx.font = '700 7.5px "Press Start 2P", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('LIVE PREVIEW', 361, 56);
+
+    // Live Player Previews
+    const previewKicker = this.sprites.kickerBlue.idle[0];
+    const previewKeeper = this.sprites.keeperBlue.idle[0];
+    if (previewKicker) {
+      ctx.drawImage(previewKicker, 275, 76, 72, 72);
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText(`키커 [NO.${this.customPlayer.jerseyNumber}]`, 311, 160);
+    }
+    if (previewKeeper) {
+      ctx.drawImage(previewKeeper, 365, 82, 60, 60);
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText('골키퍼', 395, 160);
+    }
+
+    // Selected Skill Summary in Preview
+    ctx.font = '700 7.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#f97316';
+    const kickStr = this.customPlayer.selectedKickerSkills.map((id) => getKickerSkill(id)?.nameKo).join(' · ');
+    ctx.fillText(`[KICK] ${kickStr}`, 361, 182);
+
+    ctx.fillStyle = '#22c55e';
+    const keepStr = this.customPlayer.selectedKeeperSkills.map((id) => getKeeperSkill(id)?.nameKo).join(' · ');
+    ctx.fillText(`[KEEP] ${keepStr}`, 361, 198);
+
+    // Bottom Action Buttons
+    // Back Button (3D Pixel Bevel)
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(22, 238, 70, 22);
+    ctx.fillStyle = '#475569';
+    ctx.fillRect(22, 238, 70, 2);
+    ctx.fillRect(22, 238, 2, 22);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(22, 258, 70, 2);
+    ctx.fillRect(90, 238, 2, 22);
+    ctx.textAlign = 'center';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('[ 뒤로가기 ]', 57, 252);
+
+    // Start / Confirm Match Button (3D Pixel Bevel)
+    ctx.fillStyle = '#16a34a';
+    ctx.fillRect(270, 236, 185, 24);
+    ctx.fillStyle = '#4ade80';
+    ctx.fillRect(270, 236, 185, 2);
+    ctx.fillRect(270, 236, 2, 24);
+    ctx.fillStyle = '#14532d';
+    ctx.fillRect(270, 258, 185, 2);
+    ctx.fillRect(453, 236, 2, 24);
+    ctx.font = '700 9px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('[ 경기 시작 (START) ]', 362, 252);
   }
 
   private renderModeSelectOverlay(ctx: CanvasRenderingContext2D): void {
@@ -2318,7 +2855,7 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#facc15';
     ctx.fillText('SELECT GAME MODE', VIRTUAL_WIDTH / 2, 48);
 
-    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#cbd5e1';
     ctx.fillText('AI 대결, 로컬 2인용 또는 온라인 룸 배틀을 선택하세요', VIRTUAL_WIDTH / 2, 66);
 
@@ -2327,7 +2864,7 @@ export class SuperpowerShootoutGame {
       { title: '1P VS AI - PRO', sub: '표준 아케이드 밸런스 대결', color: '#38bdf8' },
       { title: '1P VS AI - LEGEND', sub: '초반응 초능력 마스터 AI에 도전!', color: '#f43f5e' },
       { title: 'LOCAL 2P VERSUS', sub: '한 기기에서 친구와 심리전 승부차기!', color: '#c084fc' },
-      { title: '🌐 ONLINE MULTIPLAYER', sub: '다른 기기(폰/PC)와 방 코드로 실시간 대전!', color: '#facc15' },
+      { title: '[NET] ONLINE MULTIPLAYER', sub: '다른 기기(폰/PC)와 방 코드로 실시간 대전!', color: '#facc15' },
     ];
 
     options.forEach((opt, i) => {
@@ -2342,9 +2879,9 @@ export class SuperpowerShootoutGame {
 
       ctx.font = '700 8px "Press Start 2P", monospace';
       ctx.fillStyle = selected ? opt.color : '#f8fafc';
-      ctx.fillText((selected ? '▶ ' : '') + opt.title, VIRTUAL_WIDTH / 2, y + 10);
+      ctx.fillText((selected ? '> ' : '') + opt.title, VIRTUAL_WIDTH / 2, y + 10);
 
-      ctx.font = '700 7.5px "Noto Sans KR", sans-serif';
+      ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
       ctx.fillStyle = '#94a3b8';
       ctx.fillText(opt.sub, VIRTUAL_WIDTH / 2, y + 20);
     });
@@ -2359,7 +2896,7 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#facc15';
     ctx.fillText('ONLINE MULTIPLAYER LOBBY', VIRTUAL_WIDTH / 2, 45);
 
-    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#cbd5e1';
     ctx.fillText('참가할 방 번호(Room Code)를 입력하세요', VIRTUAL_WIDTH / 2, 65);
 
@@ -2375,30 +2912,171 @@ export class SuperpowerShootoutGame {
     ctx.fillText(this.onlineRoomInput + (Math.floor(this.elapsedTime * 3) % 2 === 0 ? '_' : ''), VIRTUAL_WIDTH / 2, 110);
 
     // Mobile helper: tap to change room code
-    ctx.font = '700 7px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#64748b';
     ctx.fillText('터치하여 코드 변경 (기본: 1004)', VIRTUAL_WIDTH / 2, 129);
 
     // Status Message
-    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = this.net.connected ? '#4ade80' : '#f87171';
     ctx.fillText(this.net.statusMessage, VIRTUAL_WIDTH / 2, 147);
 
-    // Connect Button
+    // Connect Button (3D Pixel Bevel)
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(140, 168, 200, 28);
-    ctx.strokeStyle = '#facc15';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(140, 168, 200, 28);
+    ctx.fillStyle = '#facc15';
+    ctx.fillRect(140, 168, 200, 2);
+    ctx.fillRect(140, 168, 2, 28);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(140, 194, 200, 2);
+    ctx.fillRect(338, 168, 2, 28);
 
     ctx.font = '700 9px "Press Start 2P", monospace';
     ctx.fillStyle = '#facc15';
     ctx.fillText('JOIN / CREATE ROOM', VIRTUAL_WIDTH / 2, 186);
 
     // Back Button
-    ctx.font = '700 8px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#94a3b8';
     ctx.fillText('ESC 또는 [뒤로가기]', VIRTUAL_WIDTH / 2, 222);
+  }
+
+  private renderPauseOverlay(ctx: CanvasRenderingContext2D): void {
+    // Dim background
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.82)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    // Modal frame
+    const modalX = 120;
+    const modalY = 52;
+    const modalW = 240;
+    const modalH = 166;
+
+    ctx.fillStyle = '#090d1a';
+    ctx.fillRect(modalX, modalY, modalW, modalH);
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(modalX + 0.5, modalY + 0.5, modalW - 1, modalH - 1);
+
+    // Header banner
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(modalX + 2, modalY + 2, modalW - 4, 30);
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(modalX + 2.5, modalY + 2.5, modalW - 5, 29);
+
+    ctx.textAlign = 'center';
+    ctx.font = '900 11px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('PAUSED', VIRTUAL_WIDTH / 2, modalY + 18);
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('[ 일시정지 ]', VIRTUAL_WIDTH / 2, modalY + 28);
+
+    // Button 1: [RESUME (계속하기)] (140, 95, 200, 26) - 3D Pixel Bevel
+    ctx.fillStyle = '#15803d';
+    ctx.fillRect(140, 95, 200, 26);
+    ctx.fillStyle = '#4ade80';
+    ctx.fillRect(140, 95, 200, 2);
+    ctx.fillRect(140, 95, 2, 26);
+    ctx.fillStyle = '#14532d';
+    ctx.fillRect(140, 119, 200, 2);
+    ctx.fillRect(338, 95, 2, 26);
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('[ 계속하기 (RESUME) ]', VIRTUAL_WIDTH / 2, 112);
+
+    // Button 2: [RETRY (다시하기)] (140, 130, 200, 26) - 3D Pixel Bevel
+    ctx.fillStyle = '#b45309';
+    ctx.fillRect(140, 130, 200, 26);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(140, 130, 200, 2);
+    ctx.fillRect(140, 130, 2, 26);
+    ctx.fillStyle = '#78350f';
+    ctx.fillRect(140, 154, 200, 2);
+    ctx.fillRect(338, 130, 2, 26);
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('[ 다시하기 (RETRY) ]', VIRTUAL_WIDTH / 2, 147);
+
+    // Button 3: [MAIN MENU (메인으로)] (140, 165, 200, 26) - 3D Pixel Bevel
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(140, 165, 200, 26);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(140, 165, 200, 2);
+    ctx.fillRect(140, 165, 2, 26);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(140, 189, 200, 2);
+    ctx.fillRect(338, 165, 2, 26);
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('[ 메인으로 (MAIN MENU) ]', VIRTUAL_WIDTH / 2, 182);
+
+    // Bottom hint
+    ctx.font = '700 7px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#64748b';
+    ctx.fillText('ESC 키를 눌러도 계속할 수 있습니다', VIRTUAL_WIDTH / 2, 207);
+  }
+
+  private renderHelpModal(ctx: CanvasRenderingContext2D): void {
+    ctx.fillStyle = 'rgba(5, 8, 22, 0.88)';
+    ctx.fillRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    // Dialog Box
+    const bx = 34;
+    const by = 24;
+    const bw = VIRTUAL_WIDTH - 68;
+    const bh = VIRTUAL_HEIGHT - 48;
+
+    ctx.fillStyle = '#090d1a';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+
+    // Header Title
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(bx + 2, by + 2, bw - 4, 22);
+    ctx.textAlign = 'center';
+    ctx.font = '700 9px "Press Start 2P", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('[ HOW TO PLAY (조작법) ]', VIRTUAL_WIDTH / 2, by + 16);
+
+    ctx.textAlign = 'left';
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+
+    // Section 1: Kicker
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('【 키커 조작 (KICKER) 】', bx + 12, by + 40);
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText('• 조준 : WASD / 마우스 / 화면 터치 드래그', bx + 16, by + 54);
+    ctx.fillText('• 슛차기 : SPACE / 마우스 누르기 / 우측하단 [슛] 버튼', bx + 16, by + 68);
+    ctx.fillText('• 게이지 : 초록색(스위트스팟) 구간에 떼면 정확하고 강력한 슛!', bx + 16, by + 82);
+
+    // Section 2: Keeper
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#4ade80';
+    ctx.fillText('【 골키퍼 조작 (KEEPER) 】', bx + 12, by + 104);
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText('• 다이빙 : WASD / 마우스 클릭 / 화면 터치 스와이프', bx + 16, by + 118);
+    ctx.fillText('• 타이밍 : 슛 날아오는 순간 다이빙 시 슈퍼 세이브 보너스!', bx + 16, by + 132);
+
+    // Section 3: Superpowers & Pause
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#facc15';
+    ctx.fillText('【 초능력 스킬 & 기능 】', bx + 12, by + 154);
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText('• 초능력 : 하단 슬롯 터치 또는 숫자키 1~4 / Q,W,E,R', bx + 16, by + 168);
+    ctx.fillText('• 일시정지 : 게임 중 ESC (계속 / 다시하기 / 메인메뉴)', bx + 16, by + 182);
+
+    // Close button prompt
+    ctx.textAlign = 'center';
+    ctx.font = '700 8px "Galmuri11", "DungGeunMo", monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('[ 화면 터치 / ESC 키로 닫기 ]', VIRTUAL_WIDTH / 2, by + bh - 10);
   }
 
   private renderMatchOverOverlay(ctx: CanvasRenderingContext2D): void {
@@ -2410,7 +3088,7 @@ export class SuperpowerShootoutGame {
     ctx.strokeRect(64, 68, VIRTUAL_WIDTH - 128, 142);
 
     ctx.textAlign = 'center';
-    ctx.font = '900 15px "Press Start 2P", "Noto Sans KR", sans-serif';
+    ctx.font = '700 13px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#facc15';
     ctx.fillText(this.winnerText, VIRTUAL_WIDTH / 2, 104);
 
@@ -2418,7 +3096,7 @@ export class SuperpowerShootoutGame {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(`${this.blueScore}  :  ${this.redScore}`, VIRTUAL_WIDTH / 2, 138);
 
-    ctx.font = '700 9px "Noto Sans KR", sans-serif';
+    ctx.font = '700 8.5px "Galmuri11", "DungGeunMo", monospace';
     ctx.fillStyle = '#38bdf8';
     ctx.fillText('SPACE / 클릭: 다시 경기하기   |   ESC: 모드 선택', VIRTUAL_WIDTH / 2, 176);
   }

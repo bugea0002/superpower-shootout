@@ -1,4 +1,4 @@
-import { GoalRect, VIRTUAL_HEIGHT, VIRTUAL_WIDTH } from './types';
+import { GoalRect, HairStyleId, AccessoryId, RENDER_SCALE, VIRTUAL_HEIGHT, VIRTUAL_WIDTH } from './types';
 
 export interface SpritePalette {
   outline: string;
@@ -118,19 +118,50 @@ const RED_TEAM_KEEPER: SpritePalette = {
   gloveDark: '#a16207',
 };
 
+// Sprites are authored in logical units but rasterized at RENDER_SCALE x finer dots.
+// Each logical pixel = RENDER_SCALE x RENDER_SCALE hi-res dots (outlines, corners & shading use the fine grid).
 function createPixelCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
+  c.width = w * RENDER_SCALE;
+  c.height = h * RENDER_SCALE;
+  (c as any).lw = w;
+  (c as any).lh = h;
   const ctx = c.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
+  ctx.scale(RENDER_SCALE, RENDER_SCALE);
   return [c, ctx];
+}
+
+/** Logical (480x270-space) width/height of a sprite canvas. */
+export function logicalSize(c: HTMLCanvasElement): [number, number] {
+  return [(c as any).lw ?? c.width, (c as any).lh ?? c.height];
+}
+
+const FINE = 1 / RENDER_SCALE;
+function q(v: number): number {
+  return Math.round(v * RENDER_SCALE) / RENDER_SCALE;
+}
+
+// Fine-grid stair-stepped rounded rectangle (smooth pixel-art corners at 4x density)
+function stairRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+  if (w < 2 || h < 2) {
+    ctx.fillRect(x, y, w, h);
+    return;
+  }
+  const insets = [0.75, 0.5, 0.25];
+  const n = insets.length;
+  ctx.fillRect(x, y + n * FINE, w, h - 2 * n * FINE);
+  for (let i = 0; i < n; i++) {
+    const ins = insets[i];
+    ctx.fillRect(x + ins, y + i * FINE, w - 2 * ins, FINE);
+    ctx.fillRect(x + ins, y + h - (i + 1) * FINE, w - 2 * ins, FINE);
+  }
 }
 
 // High-detail pixel drawing helpers
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string): void {
   ctx.fillStyle = color;
-  ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  ctx.fillRect(q(x), q(y), q(w), q(h));
 }
 
 // Organic rounded pixel box with corners clipped for human-like anatomy
@@ -143,21 +174,27 @@ function pxClipped(
   fill: string,
   outline?: string
 ): void {
-  const rx = Math.round(x);
-  const ry = Math.round(y);
-  const rw = Math.round(w);
-  const rh = Math.round(h);
+  const rx = q(x);
+  const ry = q(y);
+  const rw = q(w);
+  const rh = q(h);
 
   if (outline) {
+    // Thin crisp outline (half logical pixel = 2 fine dots) with rounded corners
     ctx.fillStyle = outline;
-    // Cross outline (omitting extreme 1px corners)
-    ctx.fillRect(rx + 1, ry - 1, rw - 2, rh + 2);
-    ctx.fillRect(rx - 1, ry + 1, rw + 2, rh - 2);
+    stairRect(ctx, rx - 0.5, ry - 0.5, rw + 1, rh + 1);
   }
 
   ctx.fillStyle = fill;
-  ctx.fillRect(rx + 1, ry, rw - 2, rh);
-  ctx.fillRect(rx, ry + 1, rw, rh - 2);
+  stairRect(ctx, rx, ry, rw, rh);
+
+  // Fine-dot volume shading: top rim light + bottom occlusion
+  if (rw >= 3 && rh >= 3) {
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(rx + 0.75, ry + 0.25, rw - 1.5, 0.5);
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.fillRect(rx + 0.5, ry + rh - 0.75, rw - 1, 0.5);
+  }
 }
 
 function pxOutlined(
@@ -169,13 +206,13 @@ function pxOutlined(
   fill: string,
   outline: string
 ): void {
-  const rx = Math.round(x);
-  const ry = Math.round(y);
-  const rw = Math.round(w);
-  const rh = Math.round(h);
+  const rx = q(x);
+  const ry = q(y);
+  const rw = q(w);
+  const rh = q(h);
   ctx.fillStyle = outline;
-  ctx.fillRect(rx - 1, ry, rw + 2, rh);
-  ctx.fillRect(rx, ry - 1, rw, rh + 2);
+  ctx.fillRect(rx - 0.5, ry, rw + 1, rh);
+  ctx.fillRect(rx, ry - 0.5, rw, rh + 1);
   ctx.fillStyle = fill;
   ctx.fillRect(rx, ry, rw, rh);
 }
@@ -210,30 +247,51 @@ export class PixelSpriteBank {
   public stadiumBackdrop: HTMLCanvasElement;
 
   constructor() {
-    this.kickerBlue = this.buildKickerSprites(BLUE_TEAM_KICKER);
-    this.kickerRed = this.buildKickerSprites(RED_TEAM_KICKER);
-    this.keeperBlue = this.buildKeeperSprites(BLUE_TEAM_KEEPER);
-    this.keeperRed = this.buildKeeperSprites(RED_TEAM_KEEPER);
+    this.kickerBlue = this.buildKickerSprites(BLUE_TEAM_KICKER, 10, 'spiky', 'headband');
+    this.kickerRed = this.buildKickerSprites(RED_TEAM_KICKER, 7, 'curly', 'none');
+    this.keeperBlue = this.buildKeeperSprites(BLUE_TEAM_KEEPER, 'spiky', 'headband');
+    this.keeperRed = this.buildKeeperSprites(RED_TEAM_KEEPER, 'curly', 'none');
     this.soccerBalls = this.buildBallSprites();
     this.iceBarrierSprite = this.buildIceBarrierSprite();
     this.stadiumBackdrop = this.buildStadiumBackdrop();
   }
 
+  public rebuildCustomSprites(
+    jerseyNum: number,
+    hairStyle: HairStyleId,
+    accessory: AccessoryId
+  ): void {
+    this.kickerBlue = this.buildKickerSprites(BLUE_TEAM_KICKER, jerseyNum, hairStyle, accessory);
+    this.keeperBlue = this.buildKeeperSprites(BLUE_TEAM_KEEPER, hairStyle, accessory);
+  }
+
   // =========================================================================
   // KICKER SPRITES (80x80, BACK-VIEW PIXEL ART)
   // =========================================================================
-  private buildKickerSprites(pal: SpritePalette): Record<KickerAnimKey, HTMLCanvasElement[]> {
-    const idle = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'idle', f));
-    const charge = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'charge', f));
-    const runup = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'runup', f));
-    const kick = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'kick', f));
-    const celebrate = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'celebrate', f));
-    const despair = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'despair', f));
-    const taunt = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'taunt', f));
+  private buildKickerSprites(
+    pal: SpritePalette,
+    jerseyNum = 10,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): Record<KickerAnimKey, HTMLCanvasElement[]> {
+    const idle = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'idle', f, jerseyNum, hairStyle, accessory));
+    const charge = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'charge', f, jerseyNum, hairStyle, accessory));
+    const runup = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'runup', f, jerseyNum, hairStyle, accessory));
+    const kick = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'kick', f, jerseyNum, hairStyle, accessory));
+    const celebrate = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'celebrate', f, jerseyNum, hairStyle, accessory));
+    const despair = [0, 1].map((f) => this.drawKickerBackFrame(pal, 'despair', f, jerseyNum, hairStyle, accessory));
+    const taunt = [0, 1, 2, 3].map((f) => this.drawKickerBackFrame(pal, 'taunt', f, jerseyNum, hairStyle, accessory));
     return { idle, charge, runup, kick, celebrate, despair, taunt };
   }
 
-  private drawKickerBackFrame(pal: SpritePalette, anim: KickerAnimKey, frame: number): HTMLCanvasElement {
+  private drawKickerBackFrame(
+    pal: SpritePalette,
+    anim: KickerAnimKey,
+    frame: number,
+    jerseyNum = 10,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(80, 80);
     const cx = 40;
 
@@ -495,18 +553,17 @@ export class PixelSpriteBank {
     // Ergonomic crew neck collar
     pxClipped(ctx, tx - 6, ty - 1, 12, 3, pal.number, pal.outline);
 
-    // Stylish athletic Back Number "10" with beveled shadow
-    const nx = tx - 6;
-    const ny = ty + 6;
+    // Athletic Back Number (customizable 1~99)
+    const numStr = Math.max(1, Math.min(99, Math.floor(jerseyNum))).toString();
+    ctx.fillStyle = pal.number;
+    ctx.textAlign = 'center';
+    ctx.font = '900 11px "Press Start 2P", monospace';
     // Shadow
-    px(ctx, nx + 2, ny + 1, 3, 10, pal.jerseyShadow);
-    px(ctx, nx + 7, ny + 1, 6, 10, pal.jerseyShadow);
-    // Number "1"
-    px(ctx, nx + 1, ny, 3, 10, pal.number);
-    px(ctx, nx, ny + 1, 1, 2, pal.number);
-    // Number "0"
-    px(ctx, nx + 6, ny, 6, 10, pal.number);
-    px(ctx, nx + 8, ny + 2, 2, 6, pal.jersey);
+    ctx.fillStyle = pal.jerseyShadow;
+    ctx.fillText(numStr, tx + 1, ty + 15);
+    // Main number text
+    ctx.fillStyle = pal.number;
+    ctx.fillText(numStr, tx, ty + 14);
 
     // ---------------- HEAD & DYNAMIC LAYERED HAIR (BACK VIEW) ----------------
     const hy = ty - 16 + (kneeling ? 3 : 0);
@@ -520,30 +577,62 @@ export class PixelSpriteBank {
     pxClipped(ctx, tx + 8, hy + 6, 3, 5, pal.skin, pal.outline);
     px(ctx, tx + 9, hy + 7, 1, 3, pal.skinDark);
 
-    // Layered Anime Hair (deep shaded base + midtone lock + highlight spikes)
-    // Dark silhouette base
-    pxClipped(ctx, tx - 10, hy, 20, 14, pal.hairDark, pal.outline);
-    // Main hair volume
-    pxClipped(ctx, tx - 9, hy + 1, 18, 12, pal.hair);
-    // Dynamic windswept hair spikes (top & sides)
-    pxClipped(ctx, tx - 13, hy + 2, 5, 5, pal.hair, pal.outline);
-    pxClipped(ctx, tx + 8, hy + 2, 5, 5, pal.hair, pal.outline);
-    pxClipped(ctx, tx - 8, hy - 3, 7, 5, pal.hair, pal.outline);
-    pxClipped(ctx, tx + 1, hy - 4, 7, 6, pal.hair, pal.outline);
-    // Glossy hair highlights (sheen)
-    px(ctx, tx - 6, hy + 1, 5, 2, pal.hairLight);
-    px(ctx, tx + 2, hy, 5, 2, pal.hairLight);
-    px(ctx, tx - 11, hy + 3, 2, 3, pal.hairLight);
+    // Dynamic Hair Styles
+    if (hairStyle === 'spiky') {
+      pxClipped(ctx, tx - 10, hy, 20, 14, pal.hairDark, pal.outline);
+      pxClipped(ctx, tx - 9, hy + 1, 18, 12, pal.hair);
+      pxClipped(ctx, tx - 13, hy + 2, 5, 5, pal.hair, pal.outline);
+      pxClipped(ctx, tx + 8, hy + 2, 5, 5, pal.hair, pal.outline);
+      pxClipped(ctx, tx - 8, hy - 3, 7, 5, pal.hair, pal.outline);
+      pxClipped(ctx, tx + 1, hy - 4, 7, 6, pal.hair, pal.outline);
+      px(ctx, tx - 6, hy + 1, 5, 2, pal.hairLight);
+      px(ctx, tx + 2, hy, 5, 2, pal.hairLight);
+    } else if (hairStyle === 'dread') {
+      pxClipped(ctx, tx - 10, hy, 20, 15, '#1e1b18', pal.outline);
+      for (let i = 0; i < 5; i++) {
+        const dx = tx - 8 + i * 4;
+        px(ctx, dx, hy + 3, 3, 12, i % 2 === 0 ? '#382e2b' : '#221c19');
+        px(ctx, dx, hy + 14, 3, 2, '#d97706'); // dread beads
+      }
+    } else if (hairStyle === 'bowl') {
+      pxClipped(ctx, tx - 11, hy - 2, 22, 13, pal.hairDark, pal.outline);
+      pxClipped(ctx, tx - 10, hy - 1, 20, 11, pal.hair);
+      px(ctx, tx - 9, hy, 18, 3, pal.hairLight);
+      px(ctx, tx - 11, hy + 9, 22, 2, pal.hairDark); // clean bowl fringe
+    } else if (hairStyle === 'curly') {
+      pxClipped(ctx, tx - 12, hy - 3, 24, 15, pal.hairDark, pal.outline);
+      pxClipped(ctx, tx - 11, hy - 2, 22, 13, pal.hair);
+      px(ctx, tx - 9, hy, 4, 3, pal.hairLight);
+      px(ctx, tx + 3, hy - 1, 5, 3, pal.hairLight);
+      px(ctx, tx - 12, hy + 3, 3, 4, pal.hair);
+      px(ctx, tx + 9, hy + 3, 3, 4, pal.hair);
+    } else if (hairStyle === 'bald') {
+      pxClipped(ctx, tx - 9, hy + 1, 18, 12, pal.skin, pal.outline);
+      px(ctx, tx - 6, hy + 2, 12, 2, pal.skinLight);
+    }
 
-    // Hero Headband with folds & fluttering tails
-    px(ctx, tx - 10, hy + 6, 20, 3, pal.band);
-    px(ctx, tx - 10, hy + 6, 20, 1, pal.bandLight); // top highlight
-    const wave = frame % 2 === 0 ? 0 : 2;
-    // Knot & dual fluttering ribbons
-    pxClipped(ctx, tx + 2, hy + 7, 5, 5, pal.band, pal.outline);
-    pxClipped(ctx, tx + 6, hy + 8 + wave, 9, 3, pal.band, pal.outline);
-    px(ctx, tx + 7, hy + 8 + wave, 7, 1, pal.bandLight);
-    pxClipped(ctx, tx + 4, hy + 11 - wave, 8, 3, pal.band, pal.outline);
+    // Customizable Accessory (Back view)
+    if (accessory === 'headband') {
+      px(ctx, tx - 10, hy + 6, 20, 3, pal.band);
+      px(ctx, tx - 10, hy + 6, 20, 1, pal.bandLight);
+      const wave = frame % 2 === 0 ? 0 : 2;
+      pxClipped(ctx, tx + 2, hy + 7, 5, 5, pal.band, pal.outline);
+      pxClipped(ctx, tx + 6, hy + 8 + wave, 9, 3, pal.band, pal.outline);
+      px(ctx, tx + 7, hy + 8 + wave, 7, 1, pal.bandLight);
+      pxClipped(ctx, tx + 4, hy + 11 - wave, 8, 3, pal.band, pal.outline);
+    } else if (accessory === 'aura_crown') {
+      pxClipped(ctx, tx - 8, hy - 7, 16, 5, '#facc15', '#a16207');
+      px(ctx, tx - 6, hy - 6, 3, 3, '#fef08a');
+      px(ctx, tx - 1, hy - 8, 2, 4, '#ffffff'); // center spike
+      px(ctx, tx + 3, hy - 6, 3, 3, '#fef08a');
+    } else if (accessory === 'glasses') {
+      // Glasses strap around back of head
+      px(ctx, tx - 11, hy + 6, 22, 2, '#0f172a');
+      px(ctx, tx - 11, hy + 7, 22, 1, '#38bdf8');
+    } else if (accessory === 'mask') {
+      // Mask strap around back of ears
+      px(ctx, tx - 10, hy + 9, 20, 2, '#e2e8f0');
+    }
 
     return canvas;
   }
@@ -551,28 +640,60 @@ export class PixelSpriteBank {
   // =========================================================================
   // GOALKEEPER SPRITES (64x64, HIGH-DETAIL FRONT-VIEW PIXEL ART)
   // =========================================================================
-  private buildKeeperSprites(pal: SpritePalette): Record<KeeperAnimKey, HTMLCanvasElement[]> {
+  private buildKeeperSprites(
+    pal: SpritePalette,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): Record<KeeperAnimKey, HTMLCanvasElement[]> {
     return {
-      idle: [0, 1, 2, 3].map((f) => this.drawKeeperIdle(pal, f)),
-      dive_low_left: [0, 1, 2].map((f) => this.drawKeeperDiveLow(pal, f, false)),
-      dive_low_right: [0, 1, 2].map((f) => this.drawKeeperDiveLow(pal, f, true)),
-      dive_top_left: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, false)),
-      dive_top_right: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, true)),
-      catch_center: [0, 1].map((f) => this.drawKeeperCatchCenter(pal, f)),
-      celebrate: [0, 1, 2, 3].map((f) => this.drawKeeperReaction(pal, f, true)),
-      despair: [0, 1].map((f) => this.drawKeeperReaction(pal, f, false)),
-      taunt: [0, 1, 2, 3].map((f) => this.drawKeeperTaunt(pal, f)),
+      idle: [0, 1, 2, 3].map((f) => this.drawKeeperIdle(pal, f, hairStyle, accessory)),
+      dive_low_left: [0, 1, 2].map((f) => this.drawKeeperDiveLow(pal, f, false, hairStyle, accessory)),
+      dive_low_right: [0, 1, 2].map((f) => this.drawKeeperDiveLow(pal, f, true, hairStyle, accessory)),
+      dive_top_left: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, false, hairStyle, accessory)),
+      dive_top_right: [0, 1, 2].map((f) => this.drawKeeperDiveHigh(pal, f, true, hairStyle, accessory)),
+      catch_center: [0, 1].map((f) => this.drawKeeperCatchCenter(pal, f, hairStyle, accessory)),
+      celebrate: [0, 1, 2, 3].map((f) => this.drawKeeperReaction(pal, f, true, hairStyle, accessory)),
+      despair: [0, 1].map((f) => this.drawKeeperReaction(pal, f, false, hairStyle, accessory)),
+      taunt: [0, 1, 2, 3].map((f) => this.drawKeeperTaunt(pal, f, hairStyle, accessory)),
     };
   }
 
-  private drawKeeperHeadFront(ctx: CanvasRenderingContext2D, pal: SpritePalette, cx: number, hy: number, shout = false): void {
+  private drawKeeperHeadFront(
+    ctx: CanvasRenderingContext2D,
+    pal: SpritePalette,
+    cx: number,
+    hy: number,
+    shout = false,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): void {
     // Hair volume back/silhouette
-    pxClipped(ctx, cx - 8, hy - 4, 16, 8, pal.hairDark, pal.outline);
-    // Spiky windswept hair strands
-    pxClipped(ctx, cx - 10, hy - 1, 4, 5, pal.hair, pal.outline);
-    pxClipped(ctx, cx + 6, hy - 1, 4, 5, pal.hair, pal.outline);
-    pxClipped(ctx, cx - 6, hy - 5, 5, 4, pal.hairLight, pal.outline);
-    pxClipped(ctx, cx + 1, hy - 5, 5, 4, pal.hairLight, pal.outline);
+    if (hairStyle === 'spiky') {
+      pxClipped(ctx, cx - 8, hy - 4, 16, 8, pal.hairDark, pal.outline);
+      pxClipped(ctx, cx - 10, hy - 1, 4, 5, pal.hair, pal.outline);
+      pxClipped(ctx, cx + 6, hy - 1, 4, 5, pal.hair, pal.outline);
+      pxClipped(ctx, cx - 6, hy - 5, 5, 4, pal.hairLight, pal.outline);
+      pxClipped(ctx, cx + 1, hy - 5, 5, 4, pal.hairLight, pal.outline);
+    } else if (hairStyle === 'dread') {
+      pxClipped(ctx, cx - 9, hy - 4, 18, 14, '#1e1b18', pal.outline);
+      for (let i = 0; i < 4; i++) {
+        px(ctx, cx - 8 + i * 4, hy + 4, 3, 7, '#382e2b');
+        px(ctx, cx - 8 + i * 4, hy + 10, 3, 2, '#d97706');
+      }
+    } else if (hairStyle === 'bowl') {
+      pxClipped(ctx, cx - 9, hy - 5, 18, 9, pal.hairDark, pal.outline);
+      pxClipped(ctx, cx - 8, hy - 4, 16, 8, pal.hair);
+      px(ctx, cx - 7, hy - 3, 14, 2, pal.hairLight);
+      px(ctx, cx - 8, hy + 3, 16, 2, pal.hairDark);
+    } else if (hairStyle === 'curly') {
+      pxClipped(ctx, cx - 10, hy - 6, 20, 11, pal.hairDark, pal.outline);
+      pxClipped(ctx, cx - 9, hy - 5, 18, 9, pal.hair);
+      px(ctx, cx - 7, hy - 4, 4, 3, pal.hairLight);
+      px(ctx, cx + 3, hy - 4, 4, 3, pal.hairLight);
+    } else if (hairStyle === 'bald') {
+      pxClipped(ctx, cx - 7, hy - 3, 14, 5, pal.skin, pal.outline);
+      px(ctx, cx - 5, hy - 2, 10, 2, pal.skinLight);
+    }
 
     // Sculpted human face with defined jawline & chin taper
     pxClipped(ctx, cx - 7, hy + 1, 14, 11, pal.skin, pal.outline);
@@ -580,9 +701,14 @@ export class PixelSpriteBank {
     px(ctx, cx - 6, hy + 9, 12, 3, pal.skinDark); // jaw shadow
     px(ctx, cx - 2, hy + 10, 4, 2, pal.skinShadow); // chin definition
 
-    // Hero Headband with 3D depth
-    px(ctx, cx - 7, hy + 1, 14, 2, pal.band);
-    px(ctx, cx - 7, hy + 1, 14, 1, pal.bandLight);
+    // Accessory (Front view)
+    if (accessory === 'headband') {
+      px(ctx, cx - 7, hy + 1, 14, 2, pal.band);
+      px(ctx, cx - 7, hy + 1, 14, 1, pal.bandLight);
+    } else if (accessory === 'aura_crown') {
+      pxClipped(ctx, cx - 7, hy - 7, 14, 4, '#facc15', '#a16207');
+      px(ctx, cx - 1, hy - 8, 2, 3, '#ffffff');
+    }
 
     // Sharp anime eyebrows & focused eyes
     px(ctx, cx - 5, hy + 4, 4, 1, pal.hairDark); // left eyebrow
@@ -608,6 +734,16 @@ export class PixelSpriteBank {
       px(ctx, cx - 3, hy + 9, 6, 1, pal.skinShadow);
       px(ctx, cx - 1, hy + 10, 2, 1, pal.skinDark);
     }
+
+    if (accessory === 'glasses') {
+      // Futuristic sports visor / goggles
+      pxClipped(ctx, cx - 6, hy + 4, 12, 4, 'rgba(56, 189, 248, 0.75)', '#0f172a');
+      px(ctx, cx - 5, hy + 4, 10, 1, '#bae6fd');
+    } else if (accessory === 'mask') {
+      // Sports safety mask covering lower face
+      pxClipped(ctx, cx - 5, hy + 7, 10, 5, '#f1f5f9', '#0f172a');
+      px(ctx, cx - 4, hy + 8, 8, 2, '#cbd5e1');
+    }
   }
 
   private drawGlove(ctx: CanvasRenderingContext2D, pal: SpritePalette, x: number, y: number, open = true): void {
@@ -623,7 +759,12 @@ export class PixelSpriteBank {
     }
   }
 
-  private drawKeeperIdle(pal: SpritePalette, frame: number): HTMLCanvasElement {
+  private drawKeeperIdle(
+    pal: SpritePalette,
+    frame: number,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const shiftX = frame === 1 ? -2 : frame === 3 ? 2 : 0;
     const bobY = frame % 2 === 0 ? 0 : 2;
@@ -678,11 +819,17 @@ export class PixelSpriteBank {
     this.drawGlove(ctx, pal, cx - 21, ty + 5 - (frame % 2));
     this.drawGlove(ctx, pal, cx + 21, ty + 5 - (frame % 2));
 
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13);
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, false, hairStyle, accessory);
     return canvas;
   }
 
-  private drawKeeperDiveLow(pal: SpritePalette, frame: number, flipRight: boolean): HTMLCanvasElement {
+  private drawKeeperDiveLow(
+    pal: SpritePalette,
+    frame: number,
+    flipRight: boolean,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [raw, ctx] = createPixelCanvas(64, 64);
 
     // Realistic blurred turf slide shadow
@@ -700,7 +847,7 @@ export class PixelSpriteBank {
       pxClipped(ctx, 40, 54, 9, 4, pal.boots, pal.outline);
       this.drawGlove(ctx, pal, 14, 34);
       this.drawGlove(ctx, pal, 18, 41);
-      this.drawKeeperHeadFront(ctx, pal, 27, 16, true);
+      this.drawKeeperHeadFront(ctx, pal, 27, 16, true, hairStyle, accessory);
     } else {
       // Full horizontal fingertip extension save!
       const ext = frame === 2 ? -4 : 0;
@@ -722,7 +869,7 @@ export class PixelSpriteBank {
       px(ctx, 20 + ext, 42, 12, 6, pal.jerseyDark);
 
       // Head locked on ball
-      this.drawKeeperHeadFront(ctx, pal, 18 + ext, 27, true);
+      this.drawKeeperHeadFront(ctx, pal, 18 + ext, 27, true, hairStyle, accessory);
 
       // Fully outstretched arms & pro gloves touching turf/corner
       pxClipped(ctx, 8 + ext, 37, 13, 6, pal.jersey, pal.outline);
@@ -735,7 +882,13 @@ export class PixelSpriteBank {
     return flipRight ? this.flipHorizontal(raw) : raw;
   }
 
-  private drawKeeperDiveHigh(pal: SpritePalette, frame: number, flipRight: boolean): HTMLCanvasElement {
+  private drawKeeperDiveHigh(
+    pal: SpritePalette,
+    frame: number,
+    flipRight: boolean,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [raw, ctx] = createPixelCanvas(64, 64);
 
     if (frame === 0) {
@@ -747,7 +900,7 @@ export class PixelSpriteBank {
       pxClipped(ctx, 35, 44, 7, 11, pal.socks, pal.outline);
       this.drawGlove(ctx, pal, 13, 20);
       this.drawGlove(ctx, pal, 21, 15);
-      this.drawKeeperHeadFront(ctx, pal, 27, 12, true);
+      this.drawKeeperHeadFront(ctx, pal, 27, 12, true, hairStyle, accessory);
     } else {
       // Diagonal mid-air superman dive toward top corner!
       const lift = frame === 2 ? -4 : 0;
@@ -771,8 +924,7 @@ export class PixelSpriteBank {
       px(ctx, 20, 28 + lift, 11, 6, pal.jerseyDark);
 
       // Focused head
-      this.drawKeeperHeadFront(ctx, pal, 21, 12 + lift, true);
-
+      this.drawKeeperHeadFront(ctx, pal, 21, 12 + lift, true, hairStyle, accessory);
       // Reaching outstretched arms & giant glove tip
       pxClipped(ctx, 8, 15 + lift, 13, 6, pal.jersey, pal.outline);
       px(ctx, 9, 16 + lift, 10, 2, pal.jerseyLight);
@@ -784,7 +936,12 @@ export class PixelSpriteBank {
     return flipRight ? this.flipHorizontal(raw) : raw;
   }
 
-  private drawKeeperCatchCenter(pal: SpritePalette, frame: number): HTMLCanvasElement {
+  private drawKeeperCatchCenter(
+    pal: SpritePalette,
+    frame: number,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const cx = 32;
     const ty = 22 + frame;
@@ -796,7 +953,7 @@ export class PixelSpriteBank {
     pxClipped(ctx, cx + 3, ty + 28, 8, 5, pal.boots, pal.outline);
     pxClipped(ctx, cx - 10, ty + 12, 20, 8, pal.shorts, pal.outline);
     pxClipped(ctx, cx - 10, ty - 1, 20, 15, pal.jersey, pal.outline);
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true, hairStyle, accessory);
 
     // Both gloves firmly clasped around ball at chest level!
     this.drawGlove(ctx, pal, cx - 5, ty + 6);
@@ -804,7 +961,13 @@ export class PixelSpriteBank {
     return canvas;
   }
 
-  private drawKeeperReaction(pal: SpritePalette, frame: number, win: boolean): HTMLCanvasElement {
+  private drawKeeperReaction(
+    pal: SpritePalette,
+    frame: number,
+    win: boolean,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const cx = 32;
     const ty = win ? (frame % 2 === 1 ? 19 : 23) : 31;
@@ -823,19 +986,24 @@ export class PixelSpriteBank {
       pxClipped(ctx, cx + 9, ty - 7, 7, 11, pal.jersey, pal.outline);
       this.drawGlove(ctx, pal, cx - 15, ty - 10, false);
       this.drawGlove(ctx, pal, cx + 15, ty - 10, false);
-      this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
+      this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true, hairStyle, accessory);
     } else {
       // Slumped on knees in defeat
       pxClipped(ctx, cx - 11, 47, 22, 9, pal.shorts, pal.outline);
       pxClipped(ctx, cx - 10, 34, 20, 15, pal.jersey, pal.outline);
       this.drawGlove(ctx, pal, cx - 13, 52, true);
       this.drawGlove(ctx, pal, cx + 13, 52, true);
-      this.drawKeeperHeadFront(ctx, pal, cx, 24, false);
+      this.drawKeeperHeadFront(ctx, pal, cx, 24, false, hairStyle, accessory);
     }
     return canvas;
   }
 
-  private drawKeeperTaunt(pal: SpritePalette, frame: number): HTMLCanvasElement {
+  private drawKeeperTaunt(
+    pal: SpritePalette,
+    frame: number,
+    hairStyle: HairStyleId = 'spiky',
+    accessory: AccessoryId = 'headband'
+  ): HTMLCanvasElement {
     const [canvas, ctx] = createPixelCanvas(64, 64);
     const cx = 32;
     const ty = 22 + (frame % 2 === 0 ? 0 : 2);
@@ -853,30 +1021,28 @@ export class PixelSpriteBank {
 
     // Finger wag / Shhh taunt or dancing arms!
     if (frame % 2 === 0) {
-      // Left glove on hip, right glove pointing finger up (finger-wag!)
       pxClipped(ctx, cx - 15, ty + 3, 7, 9, pal.jersey, pal.outline);
       this.drawGlove(ctx, pal, cx - 13, ty + 11, false);
       pxClipped(ctx, cx + 9, ty - 7, 7, 12, pal.jersey, pal.outline);
       this.drawGlove(ctx, pal, cx + 14, ty - 11, false);
-      // Index finger sticking up
       px(ctx, cx + 14, ty - 16, 2, 5, pal.glove);
     } else {
-      // Arms waving side to side
       pxClipped(ctx, cx - 16, ty - 3, 7, 10, pal.jersey, pal.outline);
       pxClipped(ctx, cx + 9, ty + 3, 7, 10, pal.jersey, pal.outline);
       this.drawGlove(ctx, pal, cx - 16, ty - 6, true);
       this.drawGlove(ctx, pal, cx + 15, ty + 12, true);
     }
 
-    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true);
+    this.drawKeeperHeadFront(ctx, pal, cx, ty - 13, true, hairStyle, accessory);
     return canvas;
   }
 
   private flipHorizontal(src: HTMLCanvasElement): HTMLCanvasElement {
-    const [dst, ctx] = createPixelCanvas(src.width, src.height);
-    ctx.translate(src.width, 0);
+    const [lw, lh] = logicalSize(src);
+    const [dst, ctx] = createPixelCanvas(lw, lh);
+    ctx.translate(lw, 0);
     ctx.scale(-1, 1);
-    ctx.drawImage(src, 0, 0);
+    ctx.drawImage(src, 0, 0, lw, lh);
     return dst;
   }
 

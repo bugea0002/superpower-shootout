@@ -3,7 +3,8 @@ import { Peer, DataConnection } from 'peerjs';
 export type NetworkGameEvent =
   | { type: 'kick_action'; aimX: number; aimY: number; power: number; skill: string }
   | { type: 'keeper_dive'; zone: string; skill: string; reflexBonus: boolean }
-  | { type: 'turn_result'; result: string; blueScore: number; redScore: number };
+  | { type: 'turn_result'; result: string; blueScore: number; redScore: number }
+  | { type: 'restart_match' };
 
 export class MultiplayerClient {
   private peer: Peer | null = null;

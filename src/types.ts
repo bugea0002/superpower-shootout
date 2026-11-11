@@ -1,10 +1,18 @@
 export const VIRTUAL_WIDTH = 480;
 export const VIRTUAL_HEIGHT = 270;
+/** Backing-store multiplier: canvas is rendered at 1920x1080 (4x dot density, crisp text). */
+export const RENDER_SCALE = 4;
 
 export type GameMode = 'vs_ai' | 'local_2p' | 'online_multi';
 export type AIDifficulty = 'rookie' | 'pro' | 'legend';
 
-export type ScreenState = 'title' | 'mode_select' | 'online_lobby' | 'playing' | 'match_over';
+export type ScreenState =
+  | 'title'
+  | 'mode_select'
+  | 'customization'
+  | 'online_lobby'
+  | 'playing'
+  | 'match_over';
 
 export type TurnRole = 'player_kick' | 'player_keep';
 
@@ -32,6 +40,17 @@ export type DiveZone =
   | 'low_right';
 
 export type ShotResult = 'pending' | 'goal' | 'saved' | 'post' | 'miss';
+
+export type HairStyleId = 'spiky' | 'dread' | 'bowl' | 'curly' | 'bald';
+export type AccessoryId = 'none' | 'headband' | 'glasses' | 'mask' | 'aura_crown';
+
+export interface PlayerCustomization {
+  jerseyNumber: number; // 1 ~ 99
+  hairStyle: HairStyleId;
+  accessory: AccessoryId;
+  selectedKickerSkills: [KickerSkillId, KickerSkillId];
+  selectedKeeperSkills: [KeeperSkillId, KeeperSkillId];
+}
 
 export interface SkillDefinition<T extends string> {
   id: T;

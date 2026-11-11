@@ -9,9 +9,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const game = new SuperpowerShootoutGame(canvas);
   game.start();
 
-  // Fullscreen button handler
-  const fullscreenBtn = document.getElementById('fullscreen-btn');
-  const toggleFullscreen = async () => {
+  // Request fullscreen and orientation lock on first interaction
+  const requestAutoFullscreen = async () => {
     try {
       if (!document.fullscreenElement) {
         const root = document.documentElement;
@@ -23,48 +22,22 @@ window.addEventListener('DOMContentLoaded', () => {
         if (screen.orientation && (screen.orientation as any).lock) {
           try {
             await (screen.orientation as any).lock('landscape');
-          } catch (_) {
-            // Screen orientation lock might not be supported or permitted
-          }
-        }
-      } else {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
+          } catch (_) {}
         }
       }
-    } catch (err) {
-      console.warn('Fullscreen toggle failed:', err);
+    } catch (_) {
+      // Browser security may require direct user gesture
     }
   };
 
-  fullscreenBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleFullscreen();
-  });
-
-  // Controls bar toggle help button
-  const toggleHelpBtn = document.getElementById('toggle-help-btn');
-  const controlsBar = document.getElementById('controls-bar');
-  const toggleHelp = () => {
-    if (!controlsBar || !toggleHelpBtn) return;
-    const isMinimized = controlsBar.classList.toggle('minimized');
-    toggleHelpBtn.innerHTML = isMinimized
-      ? '<span class="key-badge">H</span> 안내 보기'
-      : '<span class="key-badge">H</span> 안내 숨기기';
-  };
-
-  toggleHelpBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleHelp();
-  });
-
+  window.addEventListener('pointerdown', requestAutoFullscreen, { once: true });
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') {
-      toggleFullscreen();
-    } else if (e.code === 'KeyH') {
-      toggleHelp();
+      if (!document.fullscreenElement) {
+        requestAutoFullscreen();
+      } else {
+        document.exitFullscreen?.();
+      }
     }
   });
 });

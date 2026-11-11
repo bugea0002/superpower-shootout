@@ -341,7 +341,7 @@ export class PixelVFXManager {
       // Bold arcade title
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = '900 22px "Press Start 2P", "Noto Sans KR", sans-serif';
+      ctx.font = '900 22px "Press Start 2P", "Galmuri11", "DungGeunMo", monospace';
       ctx.lineWidth = 5;
       ctx.strokeStyle = b.strokeColor;
       ctx.strokeText(b.title, VIRTUAL_WIDTH / 2, bannerY - 1);
@@ -349,7 +349,7 @@ export class PixelVFXManager {
       ctx.fillText(b.title, VIRTUAL_WIDTH / 2, bannerY - 1);
 
       if (b.subtitle) {
-        ctx.font = '700 10px "Noto Sans KR", sans-serif';
+        ctx.font = '700 9.5px "Galmuri11", "DungGeunMo", monospace';
         ctx.fillStyle = '#f8fafc';
         ctx.fillText(b.subtitle, VIRTUAL_WIDTH / 2, bannerY + 15);
       }
