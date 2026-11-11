@@ -89,6 +89,7 @@ export class SuperpowerShootoutGame {
 
   // Mobile on-screen keeper dive zone buttons
   private keeperZoneButtons: Array<{ zone: DiveZone; x: number; y: number; w: number; h: number; label: string }> = [];
+  private isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
   // Aim & Power meter
   private aimX = 240;
@@ -1954,15 +1955,26 @@ export class SuperpowerShootoutGame {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(gx + fillW - 1, gy - 1, 3, gh + 2);
     } else if (this.isHumanControllingKeeper() && !this.keeper.hasDived && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
-      ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
-      ctx.fillRect(334, 172, 136, 20);
-      ctx.font = '700 8px "Noto Sans KR", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#4ade80';
-      ctx.fillText('SPACE / 탭: 세이브 점프!', 402, 185);
+      if (this.isTouchDevice) {
+        ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
+        ctx.fillRect(334, 172, 136, 20);
+        ctx.font = '700 8px "Noto Sans KR", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#4ade80';
+        ctx.fillText('SPACE / 탭: 세이브 점프!', 402, 185);
 
-      // Render on-screen 6-zone D-pad for touch / mobile users
-      this.renderKeeperZonePad(ctx);
+        // Render on-screen 6-zone D-pad for touch / mobile users only
+        this.renderKeeperZonePad(ctx);
+      } else {
+        // Minimal subtle indicator on PC
+        ctx.fillStyle = 'rgba(9, 13, 26, 0.65)';
+        ctx.fillRect(344, 175, 126, 17);
+        ctx.font = '700 7px "Noto Sans KR", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText('WASD: 방향  SPACE: 다이빙', 407, 187);
+        this.keeperZoneButtons = [];
+      }
     }
 
     // ---------------- BOTTOM SUPERPOWER SKILL BAR ----------------

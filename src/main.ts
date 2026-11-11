@@ -44,9 +44,27 @@ window.addEventListener('DOMContentLoaded', () => {
     toggleFullscreen();
   });
 
+  // Controls bar toggle help button
+  const toggleHelpBtn = document.getElementById('toggle-help-btn');
+  const controlsBar = document.getElementById('controls-bar');
+  const toggleHelp = () => {
+    if (!controlsBar || !toggleHelpBtn) return;
+    const isMinimized = controlsBar.classList.toggle('minimized');
+    toggleHelpBtn.innerHTML = isMinimized
+      ? '<span class="key-badge">H</span> 안내 보기'
+      : '<span class="key-badge">H</span> 안내 숨기기';
+  };
+
+  toggleHelpBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleHelp();
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyF') {
       toggleFullscreen();
+    } else if (e.code === 'KeyH') {
+      toggleHelp();
     }
   });
 });
