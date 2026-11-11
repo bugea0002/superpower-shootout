@@ -87,9 +87,11 @@ export class SuperpowerShootoutGame {
   private kickerSkillCooldowns: Map<string, number> = new Map();
   private keeperSkillCooldowns: Map<string, number> = new Map();
 
-  // Mobile on-screen keeper dive zone buttons
-  private keeperZoneButtons: Array<{ zone: DiveZone; x: number; y: number; w: number; h: number; label: string }> = [];
+  // Mobile touch controls (Method A: touch aim + kick button + swipe dive)
   private isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  private touchKickButtonRect = { x: 378, y: 168, w: 90, h: 32 };
+  private touchSwipeStart: { x: number; y: number; time: number } | null = null;
+  private touchSwipeTrail: Array<{ x: number; y: number; alpha: number }> = [];
 
   // Aim & Power meter
   private aimX = 240;
@@ -265,12 +267,28 @@ export class SuperpowerShootoutGame {
       if (this.screen === 'playing') {
         const humanKicking = this.isHumanControllingKicker();
         const humanKeeping = this.isHumanControllingKeeper();
+
+        // Mobile touch trail for visual feedback
+        this.touchSwipeTrail.push({ x: pt.x, y: pt.y, alpha: 1.0 });
+
         if (humanKicking && (this.phase === 'aiming' || this.phase === 'charging')) {
-          this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
-          this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
-        } else if (humanKeeping && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
-          if (pt.y < 180) {
-            this.keeperAimZone = coordsToZone(pt.x, pt.y, this.goal);
+          // If dragging around the playing area, smoothly update aim
+          if (pt.y < 210) {
+            this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, pt.x));
+            this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, pt.y));
+          }
+        } else if (humanKeeping && this.touchSwipeStart) {
+          // Swipe detection for keeper dive
+          const dx = pt.x - this.touchSwipeStart.x;
+          const dy = pt.y - this.touchSwipeStart.y;
+          const dist = Math.hypot(dx, dy);
+
+          // If swipe distance threshold reached, trigger dive immediately!
+          if (dist > 22 && !this.keeper.hasDived && (this.phase === 'ball_flight' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'aiming')) {
+            const zone = this.vectorToDiveZone(dx, dy);
+            this.keeperAimZone = zone;
+            this.executeKeeperDive(zone, this.selectedKeeperSkill);
+            this.touchSwipeStart = null; // consume swipe
           }
         }
       }
@@ -293,11 +311,14 @@ export class SuperpowerShootoutGame {
       const pt = this.clientToVirtual(t.clientX, t.clientY);
       this.mousePos.x = pt.x;
       this.mousePos.y = pt.y;
+      this.touchSwipeStart = { x: pt.x, y: pt.y, time: performance.now() };
+      this.touchSwipeTrail = [{ x: pt.x, y: pt.y, alpha: 1.0 }];
       this.handlePointerDown(pt.x, pt.y);
     }, { passive: false });
 
     this.canvas.addEventListener('touchend', (e) => {
       e.preventDefault();
+      this.touchSwipeStart = null;
       this.handleActionRelease();
     }, { passive: false });
   }
@@ -439,17 +460,6 @@ export class SuperpowerShootoutGame {
     }
 
     if (this.screen === 'playing') {
-      // Check keeper 6-zone D-pad clicks
-      if (this.isHumanControllingKeeper()) {
-        for (const btn of this.keeperZoneButtons) {
-          if (vx >= btn.x && vx <= btn.x + btn.w && vy >= btn.y && vy <= btn.y + btn.h) {
-            this.keeperAimZone = btn.zone;
-            this.audio.playUiSelect();
-            return;
-          }
-        }
-      }
-
       // Check skill slot clicks at bottom bar
       for (const slot of this.skillSlotRects) {
         if (vx >= slot.x && vx <= slot.x + slot.w && vy >= slot.y && vy <= slot.y + slot.h) {
@@ -458,17 +468,39 @@ export class SuperpowerShootoutGame {
         }
       }
 
-      if (this.isHumanControllingKicker() && this.phase === 'aiming') {
-        if (vy < 185) {
-          this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, vx));
-          this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, vy));
+      if (this.isHumanControllingKicker()) {
+        const btn = this.touchKickButtonRect;
+        const clickedKickBtn = vx >= btn.x && vx <= btn.x + btn.w && vy >= btn.y && vy <= btn.y + btn.h;
+
+        if (this.phase === 'aiming') {
+          if (clickedKickBtn) {
+            // Touch kick button begins charging
+            this.handleActionPress();
+          } else {
+            // Screen drag updates aim without accidentally starting power charge
+            if (vy < 210) {
+              this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, vx));
+              this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, vy));
+            }
+            // On desktop mouse click outside kick button, it also begins charging
+            if (!this.isTouchDevice) {
+              this.handleActionPress();
+            }
+          }
+        } else if (this.phase === 'charging') {
+          if (!clickedKickBtn && vy < 210) {
+            this.aimX = Math.max(this.goal.left - 18, Math.min(this.goal.right + 18, vx));
+            this.aimY = Math.max(this.goal.top - 14, Math.min(this.goal.bottom + 4, vy));
+          }
         }
-        this.handleActionPress();
       } else if (this.isHumanControllingKeeper()) {
-        if (vy < 185) {
-          this.keeperAimZone = coordsToZone(vx, vy, this.goal);
+        if (!this.isTouchDevice) {
+          if (vy < 185) {
+            this.keeperAimZone = coordsToZone(vx, vy, this.goal);
+          }
+          this.handleActionPress();
         }
-        this.handleActionPress();
+        // On touch device, goalkeeper dives via swipe gesture in touchmove!
       }
     }
   }
@@ -513,6 +545,25 @@ export class SuperpowerShootoutGame {
       return (isP1Keeper && this.net.myRole === 'p1') || (!isP1Keeper && this.net.myRole === 'p2');
     }
     return this.turnRole === 'player_keep';
+  }
+
+  private vectorToDiveZone(dx: number, dy: number): DiveZone {
+    // Determine 6 dive zones based on angle/displacement
+    // Upwards vs Lowers
+    const isUp = dy < -10;
+    const isLow = dy > 10;
+    const absX = Math.abs(dx);
+
+    if (absX < 14) {
+      if (isUp) return 'top_center';
+      return 'center';
+    }
+
+    if (dx < 0) {
+      return isLow ? 'low_left' : 'top_left';
+    } else {
+      return isLow ? 'low_right' : 'top_right';
+    }
   }
 
   private getSkillCooldownRemaining(skillId: string, isKeeper: boolean): number {
@@ -1763,6 +1814,39 @@ export class SuperpowerShootoutGame {
     const dx = Math.round(this.keeper.x - w / 2);
     const dy = Math.round(this.keeper.y - h + 22 * this.keeper.scale);
 
+    // Indicator when human controls keeper: Floating [YOU] badge & ground ring
+    const isHumanKeeper = this.isHumanControllingKeeper();
+    if (isHumanKeeper && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
+      // Ground circle ring
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(this.keeper.x, this.keeper.y + 4, 18, 6, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Floating [YOU] badge
+      const bobY = Math.sin(this.elapsedTime * 6) * 3;
+      const badgeY = dy - 10 + bobY;
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(this.keeper.x - 14, badgeY - 7, 28, 10);
+      ctx.strokeStyle = '#86efac';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(this.keeper.x - 13.5, badgeY - 6.5, 27, 9);
+      ctx.font = '700 6px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('YOU', this.keeper.x, badgeY);
+
+      // Downward pointer triangle
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.moveTo(this.keeper.x - 4, badgeY + 3);
+      ctx.lineTo(this.keeper.x + 4, badgeY + 3);
+      ctx.lineTo(this.keeper.x, badgeY + 7);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     if (this.keeper.skillActive === 'titan') {
       // Green emerald aura outline pulse
       ctx.fillStyle = 'rgba(34, 197, 94, 0.28)';
@@ -1779,6 +1863,40 @@ export class SuperpowerShootoutGame {
 
     const dx = Math.round(this.kicker.x - 40);
     const dy = Math.round(this.kicker.y - 62);
+
+    // Indicator when human controls kicker: Floating [YOU] badge & ground ring
+    const isHumanKicker = this.isHumanControllingKicker();
+    if (isHumanKicker && (this.phase === 'aiming' || this.phase === 'charging')) {
+      // Ground circle ring
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(this.kicker.x, this.kicker.y + 4, 18, 6, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Floating [YOU] badge
+      const bobY = Math.sin(this.elapsedTime * 6) * 3;
+      const badgeY = dy - 10 + bobY;
+      ctx.fillStyle = '#0284c7';
+      ctx.fillRect(this.kicker.x - 14, badgeY - 7, 28, 10);
+      ctx.strokeStyle = '#7dd3fc';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(this.kicker.x - 13.5, badgeY - 6.5, 27, 9);
+      ctx.font = '700 6px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('YOU', this.kicker.x, badgeY);
+
+      // Downward pointer triangle
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(this.kicker.x - 4, badgeY + 3);
+      ctx.lineTo(this.kicker.x + 4, badgeY + 3);
+      ctx.lineTo(this.kicker.x, badgeY + 7);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     ctx.drawImage(img, dx, dy);
   }
 
@@ -1870,20 +1988,22 @@ export class SuperpowerShootoutGame {
     ctx.fillRect(8, 6, VIRTUAL_WIDTH - 16, 2);
 
     // Blue Team (Left)
+    const isP1Human = this.gameMode === 'online_multi' ? this.net.myRole === 'p1' : true;
+    const p1RoleTag = this.turnRole === 'player_kick' ? '⚽' : '🧤';
     const p1Label =
       this.gameMode === 'local_2p'
-        ? 'P1'
+        ? `P1 ${p1RoleTag}`
         : this.gameMode === 'online_multi'
-        ? this.net.myRole === 'p1' ? 'YOU(P1)' : 'P1'
-        : 'YOU';
+        ? this.net.myRole === 'p1' ? `YOU ${p1RoleTag}` : `P1 ${p1RoleTag}`
+        : `YOU ${p1RoleTag}`;
     ctx.fillStyle = '#2563eb';
-    ctx.fillRect(12, 10, 56, 12);
-    ctx.font = '700 7px "Press Start 2P", monospace';
+    ctx.fillRect(12, 10, 64, 12);
+    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(p1Label, 40, 19);
+    ctx.fillText(p1Label, 44, 19);
 
-    this.renderPenaltyDots(ctx, 72, 12, this.blueHistory, true);
+    this.renderPenaltyDots(ctx, 80, 12, this.blueHistory, true);
 
     // Center Score & Round
     ctx.fillStyle = '#0f172a';
@@ -1901,18 +2021,19 @@ export class SuperpowerShootoutGame {
     ctx.fillText(this.isSuddenDeath ? 'SUDDEN DEATH' : `ROUND ${Math.min(5, this.round)}/5`, 240, 30);
 
     // Red Team (Right)
+    const p2RoleTag = this.turnRole === 'player_kick' ? '🧤' : '⚽';
     const p2Label =
       this.gameMode === 'local_2p'
-        ? 'P2'
+        ? `${p2RoleTag} P2`
         : this.gameMode === 'online_multi'
-        ? this.net.myRole === 'p2' ? 'YOU(P2)' : 'P2'
-        : this.difficulty.toUpperCase();
-    this.renderPenaltyDots(ctx, 290, 12, this.redHistory, false);
+        ? this.net.myRole === 'p2' ? `${p2RoleTag} YOU` : `${p2RoleTag} P2`
+        : `${p2RoleTag} AI`;
+    this.renderPenaltyDots(ctx, 282, 12, this.redHistory, false);
     ctx.fillStyle = '#dc2626';
-    ctx.fillRect(VIRTUAL_WIDTH - 68, 10, 56, 12);
-    ctx.font = '700 7px "Press Start 2P", monospace';
+    ctx.fillRect(VIRTUAL_WIDTH - 76, 10, 64, 12);
+    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(p2Label, VIRTUAL_WIDTH - 40, 19);
+    ctx.fillText(p2Label, VIRTUAL_WIDTH - 44, 19);
 
     // Mana Bars under each team
     this.renderManaBar(ctx, 12, 25, 168, 7, this.blueMana, '#38bdf8');
@@ -1931,7 +2052,7 @@ export class SuperpowerShootoutGame {
       ctx.font = '700 7px "Press Start 2P", monospace';
       ctx.textAlign = 'left';
       ctx.fillStyle = '#facc15';
-      ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : 'HOLD SPACE/클릭', gx, gy - 3);
+      ctx.fillText(this.phase === 'charging' ? 'RELEASE:SHOOT' : this.isTouchDevice ? 'TOUCH & KICK' : 'HOLD SPACE/클릭', gx, gy - 3);
 
       // Meter track zones
       ctx.fillStyle = '#334155';
@@ -1954,17 +2075,31 @@ export class SuperpowerShootoutGame {
       // Marker needle
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(gx + fillW - 1, gy - 1, 3, gh + 2);
+
+      // If mobile touch device, render dedicated [⚽ KICK] button below or next to gauge
+      if (this.isTouchDevice) {
+        const btn = this.touchKickButtonRect;
+        const isCharging = this.phase === 'charging';
+        ctx.fillStyle = isCharging ? '#0284c7' : 'rgba(15, 23, 42, 0.92)';
+        ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+        ctx.strokeStyle = isCharging ? '#38bdf8' : '#facc15';
+        ctx.lineWidth = isCharging ? 2 : 1.5;
+        ctx.strokeRect(btn.x + 0.5, btn.y + 0.5, btn.w - 1, btn.h - 1);
+
+        ctx.font = '700 9px "Noto Sans KR", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(isCharging ? '떼면 슛!' : '⚽ 꾹 눌러 슛', btn.x + btn.w / 2, btn.y + 20);
+      }
     } else if (this.isHumanControllingKeeper() && !this.keeper.hasDived && (this.phase === 'aiming' || this.phase === 'charging' || this.phase === 'runup' || this.phase === 'ball_flight')) {
       if (this.isTouchDevice) {
-        ctx.fillStyle = 'rgba(9, 13, 26, 0.85)';
-        ctx.fillRect(334, 172, 136, 20);
+        // Subtle hint for mobile swipe
+        ctx.fillStyle = 'rgba(9, 13, 26, 0.75)';
+        ctx.fillRect(324, 172, 146, 20);
         ctx.font = '700 8px "Noto Sans KR", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#4ade80';
-        ctx.fillText('SPACE / 탭: 세이브 점프!', 402, 185);
-
-        // Render on-screen 6-zone D-pad for touch / mobile users only
-        this.renderKeeperZonePad(ctx);
+        ctx.fillText('방향으로 슥 드래그/스와이프!', 397, 185);
       } else {
         // Minimal subtle indicator on PC
         ctx.fillStyle = 'rgba(9, 13, 26, 0.65)';
@@ -1973,55 +2108,32 @@ export class SuperpowerShootoutGame {
         ctx.textAlign = 'center';
         ctx.fillStyle = '#38bdf8';
         ctx.fillText('WASD: 방향  SPACE: 다이빙', 407, 187);
-        this.keeperZoneButtons = [];
       }
+    }
+
+    // Render mobile touch swipe trail if any
+    if (this.touchSwipeTrail.length > 1) {
+      ctx.save();
+      for (let i = 1; i < this.touchSwipeTrail.length; i++) {
+        const p1 = this.touchSwipeTrail[i - 1];
+        const p2 = this.touchSwipeTrail[i];
+        ctx.strokeStyle = `rgba(56, 189, 248, ${p2.alpha * 0.7})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+        p2.alpha *= 0.92;
+      }
+      ctx.restore();
+      this.touchSwipeTrail = this.touchSwipeTrail.filter((p) => p.alpha > 0.08);
     }
 
     // ---------------- BOTTOM SUPERPOWER SKILL BAR ----------------
     this.renderSkillBar(ctx);
   }
 
-  private renderKeeperZonePad(ctx: CanvasRenderingContext2D): void {
-    this.keeperZoneButtons = [];
-    const padX = 14;
-    const padY = 160;
-    const btnW = 34;
-    const btnH = 22;
-    const gap = 3;
 
-    const layout: Array<{ zone: DiveZone; col: number; row: number; label: string }> = [
-      { zone: 'top_left', col: 0, row: 0, label: '↖좌상' },
-      { zone: 'top_center', col: 1, row: 0, label: '↑중상' },
-      { zone: 'top_right', col: 2, row: 0, label: '↗우상' },
-      { zone: 'low_left', col: 0, row: 1, label: '↙좌하' },
-      { zone: 'center', col: 1, row: 1, label: '•중앙' },
-      { zone: 'low_right', col: 2, row: 1, label: '↘우하' },
-    ];
-
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-    ctx.fillRect(padX - 4, padY - 14, (btnW + gap) * 3 + 5, (btnH + gap) * 2 + 18);
-    ctx.font = '700 6.5px "Noto Sans KR", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#38bdf8';
-    ctx.fillText('다이빙 방향 선택 (터치)', padX + (btnW + gap) * 1.5, padY - 4);
-
-    layout.forEach((btn) => {
-      const bx = padX + btn.col * (btnW + gap);
-      const by = padY + btn.row * (btnH + gap);
-      this.keeperZoneButtons.push({ zone: btn.zone, x: bx, y: by, w: btnW, h: btnH, label: btn.label });
-
-      const isAimed = this.keeperAimZone === btn.zone;
-      ctx.fillStyle = isAimed ? '#0284c7' : 'rgba(30, 41, 59, 0.9)';
-      ctx.fillRect(bx, by, btnW, btnH);
-      ctx.strokeStyle = isAimed ? '#38bdf8' : '#475569';
-      ctx.lineWidth = isAimed ? 1.5 : 1;
-      ctx.strokeRect(bx + 0.5, by + 0.5, btnW - 1, btnH - 1);
-
-      ctx.fillStyle = isAimed ? '#facc15' : '#e2e8f0';
-      ctx.font = '700 7px "Noto Sans KR", sans-serif';
-      ctx.fillText(btn.label, bx + btnW / 2, by + btnH / 2 + 3);
-    });
-  }
 
   private renderPenaltyDots(
     ctx: CanvasRenderingContext2D,
